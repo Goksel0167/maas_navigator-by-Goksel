@@ -5,25 +5,30 @@ MaaşPro - Bordro & Finans Yönetim Sistemi
 Profesyonel bordro hesaplama, tazminat analizi ve yatırım planlama uygulaması
 """
 
-import json
-import os
-from datetime import datetime, timedelta
+from datetime import datetime, date
 from typing import Dict, List, Tuple
 import sqlite3
 
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+
+
+# ─────────────────────────────────────────────
+#  İŞ MANTIĞI SINIFLARI
+# ─────────────────────────────────────────────
 
 class BordroYonetim:
     """Bordro kayıtlarını yöneten sınıf"""
-    
+
     def __init__(self, db_path: str = "maaspro.db"):
         self.db_path = db_path
         self.baglanti_olustur()
-    
+
     def baglanti_olustur(self):
-        """Veritabanı bağlantısı ve tabloları oluştur"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS bordrolar (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -36,59 +41,42 @@ class BordroYonetim:
                 eklenme_tarihi TEXT DEFAULT CURRENT_TIMESTAMP
             )
         ''')
-        
         conn.commit()
         conn.close()
-    
+
     def bordro_ekle(self, ay: str, brut: float, net: float) -> bool:
-        """Yeni bordro kaydı ekle"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            
-            # Kesintileri hesapla
             sgk = brut * 0.14
             damga = brut * 0.00759
             gelir_vergisi = brut - net - sgk - damga
-            
             cursor.execute('''
                 INSERT INTO bordrolar (ay, brut, net, sgk_kesinti, gelir_vergisi, damga_vergisi)
                 VALUES (?, ?, ?, ?, ?, ?)
             ''', (ay, brut, net, sgk, gelir_vergisi, damga))
-            
             conn.commit()
             conn.close()
             return True
-        except Exception as e:
-            print(f"Hata: {e}")
+        except Exception:
             return False
-    
+
     def bordrolari_getir(self) -> List[Dict]:
-        """Tüm bordroları getir"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
-        
         cursor.execute('SELECT * FROM bordrolar ORDER BY ay DESC')
         rows = cursor.fetchall()
-        
         bordrolar = []
         for row in rows:
             bordrolar.append({
-                'id': row[0],
-                'ay': row[1],
-                'brut': row[2],
-                'net': row[3],
-                'sgk_kesinti': row[4],
-                'gelir_vergisi': row[5],
-                'damga_vergisi': row[6],
-                'eklenme_tarihi': row[7]
+                'id': row[0], 'ay': row[1], 'brut': row[2], 'net': row[3],
+                'sgk_kesinti': row[4], 'gelir_vergisi': row[5],
+                'damga_vergisi': row[6], 'eklenme_tarihi': row[7]
             })
-        
         conn.close()
         return bordrolar
-    
+
     def bordro_sil(self, bordro_id: int) -> bool:
-        """Bordro kaydını sil"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -96,25 +84,16 @@ class BordroYonetim:
             conn.commit()
             conn.close()
             return True
-        except:
+        except Exception:
             return False
-    
+
     def istatistikler(self) -> Dict:
-        """Bordro istatistiklerini hesapla"""
         bordrolar = self.bordrolari_getir()
-        
         if not bordrolar:
-            return {
-                'toplam': 0,
-                'ortalama_brut': 0,
-                'ortalama_net': 0,
-                'toplam_kazanc': 0,
-                'toplam_kesinti': 0
-            }
-        
+            return {'toplam': 0, 'ortalama_brut': 0, 'ortalama_net': 0,
+                    'toplam_kazanc': 0, 'toplam_kesinti': 0}
         toplam_brut = sum(b['brut'] for b in bordrolar)
         toplam_net = sum(b['net'] for b in bordrolar)
-        
         return {
             'toplam': len(bordrolar),
             'ortalama_brut': toplam_brut / len(bordrolar),
@@ -125,76 +104,52 @@ class BordroYonetim:
 
 
 class TazminatHesaplayici:
-    """Tazminat hesaplama sınıfı"""
-    
-    # 2026 Ocak-Haziran kıdem tazminatı tavanı
     KIDEM_TAVAN = 64948.77
-    
+
     @staticmethod
     def calisma_suresi_hesapla(baslama: str, bitis: str) -> Tuple[int, int]:
-        """Çalışma süresini yıl ve gün olarak hesapla"""
         baslama_tarih = datetime.strptime(baslama, '%Y-%m-%d')
         bitis_tarih = datetime.strptime(bitis, '%Y-%m-%d')
-        
         fark = bitis_tarih - baslama_tarih
         toplam_gun = fark.days
-        
         yil = toplam_gun // 365
         gun = toplam_gun % 365
-        
         return yil, gun
-    
+
     @staticmethod
-    def kidem_tazminati_hesapla(brut_maas: float, calisma_yil: int, 
+    def kidem_tazminati_hesapla(brut_maas: float, calisma_yil: int,
                                  calisma_gun: int, cikis_sebebi: str) -> float:
-        """Kıdem tazminatı hesapla"""
-        # Kıdem hakkı kontrolü
         kidem_hakki = cikis_sebebi in ['isverenFeshi', 'emeklilik', 'olum', 'askerlik']
-        
         if not kidem_hakki or calisma_yil < 1:
             return 0.0
-        
-        # Tavan kontrolü
         brut_yillik = min(brut_maas, TazminatHesaplayici.KIDEM_TAVAN)
-        
-        # Tam yıllar için tazminat
         kidem = brut_yillik * calisma_yil
-        
-        # Kalan günler için
         if calisma_gun > 0:
             kidem += (brut_yillik / 365) * calisma_gun
-        
         return kidem
-    
+
     @staticmethod
-    def ihbar_tazminati_hesapla(brut_maas: float, calisma_yil: float, 
+    def ihbar_tazminati_hesapla(brut_maas: float, calisma_yil: float,
                                  cikis_sebebi: str) -> float:
-        """İhbar tazminatı hesapla"""
         if cikis_sebebi != 'isverenFeshi':
             return 0.0
-        
         if calisma_yil < 0.5:
-            return brut_maas * 2 / 4  # 2 hafta
+            return brut_maas * 2 / 4
         elif calisma_yil < 1.5:
-            return brut_maas * 4 / 4  # 4 hafta
+            return brut_maas * 4 / 4
         elif calisma_yil < 3:
-            return brut_maas * 6 / 4  # 6 hafta
+            return brut_maas * 6 / 4
         else:
-            return brut_maas * 8 / 4  # 8 hafta
-    
+            return brut_maas * 8 / 4
+
     @staticmethod
     def yillik_izin_ucreti_hesapla(brut_maas: float, kalan_izin: int) -> float:
-        """Yıllık izin ücreti hesapla"""
-        gunluk_ucret = brut_maas / 30
-        return gunluk_ucret * kalan_izin
-    
+        return (brut_maas / 30) * kalan_izin
+
     @staticmethod
     def vergi_kesintileri_hesapla(toplam_brut: float) -> Dict[str, float]:
-        """Vergi ve kesintileri hesapla"""
         sgk_kesinti = toplam_brut * 0.14
         vergi_matrahi = toplam_brut - sgk_kesinti
-        
-        # Gelir vergisi dilimleri (2025)
         if vergi_matrahi <= 110000:
             gelir_vergisi = vergi_matrahi * 0.15
         elif vergi_matrahi <= 230000:
@@ -202,597 +157,534 @@ class TazminatHesaplayici:
         elif vergi_matrahi <= 580000:
             gelir_vergisi = 110000 * 0.15 + 120000 * 0.20 + (vergi_matrahi - 230000) * 0.27
         elif vergi_matrahi <= 3000000:
-            gelir_vergisi = 110000 * 0.15 + 120000 * 0.20 + 350000 * 0.27 + (vergi_matrahi - 580000) * 0.35
+            gelir_vergisi = (110000 * 0.15 + 120000 * 0.20 + 350000 * 0.27
+                             + (vergi_matrahi - 580000) * 0.35)
         else:
-            gelir_vergisi = 110000 * 0.15 + 120000 * 0.20 + 350000 * 0.27 + 2420000 * 0.35 + (vergi_matrahi - 3000000) * 0.40
-        
+            gelir_vergisi = (110000 * 0.15 + 120000 * 0.20 + 350000 * 0.27
+                             + 2420000 * 0.35 + (vergi_matrahi - 3000000) * 0.40)
         damga_vergisi = toplam_brut * 0.00759
-        
         return {
             'sgk': sgk_kesinti,
             'gelir_vergisi': gelir_vergisi,
             'damga': damga_vergisi,
             'toplam_kesinti': sgk_kesinti + gelir_vergisi + damga_vergisi
         }
-    
+
     @classmethod
     def tam_hesaplama(cls, brut_maas: float, baslama: str, bitis: str,
-                     cikis_sebebi: str, kalan_izin: int = 0) -> Dict:
-        """Tüm tazminat hesaplamalarını yap"""
+                      cikis_sebebi: str, kalan_izin: int = 0) -> Dict:
         yil, gun = cls.calisma_suresi_hesapla(baslama, bitis)
         calisma_yil_desimal = yil + (gun / 365)
-        
         kidem = cls.kidem_tazminati_hesapla(brut_maas, yil, gun, cikis_sebebi)
         ihbar = cls.ihbar_tazminati_hesapla(brut_maas, calisma_yil_desimal, cikis_sebebi)
         yillik_izin = cls.yillik_izin_ucreti_hesapla(brut_maas, kalan_izin)
-        
         toplam_brut = kidem + ihbar + yillik_izin
-        kesintiler = cls.vergi_kesintileri_hesapla(toplam_brut)
+        if toplam_brut > 0:
+            kesintiler = cls.vergi_kesintileri_hesapla(toplam_brut)
+        else:
+            kesintiler = {'sgk': 0, 'gelir_vergisi': 0, 'damga': 0, 'toplam_kesinti': 0}
         net_tutar = toplam_brut - kesintiler['toplam_kesinti']
-        
         return {
-            'calisma_suresi': {
-                'yil': yil,
-                'gun': gun,
-                'toplam_yil': calisma_yil_desimal
-            },
-            'tazminatlar': {
-                'kidem': kidem,
-                'ihbar': ihbar,
-                'yillik_izin': yillik_izin,
-                'toplam_brut': toplam_brut
-            },
+            'calisma_suresi': {'yil': yil, 'gun': gun, 'toplam_yil': calisma_yil_desimal},
+            'tazminatlar': {'kidem': kidem, 'ihbar': ihbar,
+                            'yillik_izin': yillik_izin, 'toplam_brut': toplam_brut},
             'kesintiler': kesintiler,
             'net_tutar': net_tutar
         }
 
 
 class AsgariUcretAnaliz:
-    """Asgari ücret analizi sınıfı"""
-    
     ASGARI_UCRETLER = [
-        {'yil': 2020, 'donem': 1, 'brut': 2943.00, 'net': 2324.71, 'artis': 15.0},
-        {'yil': 2020, 'donem': 2, 'brut': 2943.00, 'net': 2324.71, 'artis': 0.0},
-        {'yil': 2021, 'donem': 1, 'brut': 3577.50, 'net': 2825.90, 'artis': 21.56},
-        {'yil': 2021, 'donem': 2, 'brut': 3577.50, 'net': 2825.90, 'artis': 0.0},
-        {'yil': 2022, 'donem': 1, 'brut': 4253.40, 'net': 3361.88, 'artis': 18.98},
-        {'yil': 2022, 'donem': 2, 'brut': 5500.35, 'net': 4250.45, 'artis': 29.32},
-        {'yil': 2023, 'donem': 1, 'brut': 8506.80, 'net': 6402.21, 'artis': 50.63},
-        {'yil': 2023, 'donem': 2, 'brut': 11402.32, 'net': 8502.07, 'artis': 34.04},
+        {'yil': 2020, 'donem': 1, 'brut': 2943.00,  'net': 2324.71,  'artis': 15.0},
+        {'yil': 2020, 'donem': 2, 'brut': 2943.00,  'net': 2324.71,  'artis': 0.0},
+        {'yil': 2021, 'donem': 1, 'brut': 3577.50,  'net': 2825.90,  'artis': 21.56},
+        {'yil': 2021, 'donem': 2, 'brut': 3577.50,  'net': 2825.90,  'artis': 0.0},
+        {'yil': 2022, 'donem': 1, 'brut': 4253.40,  'net': 3361.88,  'artis': 18.98},
+        {'yil': 2022, 'donem': 2, 'brut': 5500.35,  'net': 4250.45,  'artis': 29.32},
+        {'yil': 2023, 'donem': 1, 'brut': 8506.80,  'net': 6402.21,  'artis': 50.63},
+        {'yil': 2023, 'donem': 2, 'brut': 11402.32, 'net': 8502.07,  'artis': 34.04},
         {'yil': 2024, 'donem': 1, 'brut': 17002.12, 'net': 12475.11, 'artis': 49.12},
         {'yil': 2024, 'donem': 2, 'brut': 20002.50, 'net': 14738.06, 'artis': 17.65},
         {'yil': 2025, 'donem': 1, 'brut': 26005.50, 'net': 22104.67, 'artis': 30.02},
         {'yil': 2025, 'donem': 2, 'brut': 26005.50, 'net': 22104.67, 'artis': 0.0},
-        {'yil': 2026, 'donem': 1, 'brut': 33030.00, 'net': 28075.50, 'artis': 27.0}
+        {'yil': 2026, 'donem': 1, 'brut': 33030.00, 'net': 28075.50, 'artis': 27.0},
     ]
-    
+
     @classmethod
     def katsayi_hesapla(cls, maas: float, yil: int = 2026) -> Dict:
-        """Maaşın asgari ücrete oranını hesapla"""
         guncel = [au for au in cls.ASGARI_UCRETLER if au['yil'] == yil][-1]
-        
         return {
             'asgari_ucret': guncel,
             'katsayi': round(maas / guncel['brut'], 2),
             'fark': maas - guncel['brut']
         }
-    
+
     @classmethod
     def toplam_artis(cls) -> float:
-        """2020'den bugüne toplam artış oranı"""
         ilk = cls.ASGARI_UCRETLER[0]['brut']
         son = cls.ASGARI_UCRETLER[-1]['brut']
-        return round(((son / ilk - 1) * 100), 2)
+        return round((son / ilk - 1) * 100, 2)
 
 
 class ButcePlanlama:
-    """50-30-20 bütçe planlama sınıfı"""
-    
     @staticmethod
     def butce_hesapla(net_gelir: float) -> Dict:
-        """50-30-20 kuralına göre bütçe planla"""
-        ihtiyaclar = net_gelir * 0.50
-        istekler = net_gelir * 0.30
-        tasarruf = net_gelir * 0.20
-        
         return {
             'net_gelir': net_gelir,
             'ihtiyaclar': {
-                'tutar': ihtiyaclar,
-                'oran': 50,
-                'kategoriler': [
-                    'Kira / Konut kredisi',
-                    'Faturalar (elektrik, su, doğalgaz)',
-                    'Market ve yiyecek',
-                    'Ulaşım',
-                    'Sigorta ödemeleri'
-                ]
+                'tutar': net_gelir * 0.50, 'oran': 50,
+                'kategoriler': ['Kira / Konut kredisi', 'Faturalar (elektrik, su, doğalgaz)',
+                                'Market ve yiyecek', 'Ulaşım', 'Sigorta ödemeleri']
             },
             'istekler': {
-                'tutar': istekler,
-                'oran': 30,
-                'kategoriler': [
-                    'Eğlence ve hobi',
-                    'Dışarıda yemek',
-                    'Alışveriş',
-                    'Seyahat ve tatil',
-                    'Abonelikler'
-                ]
+                'tutar': net_gelir * 0.30, 'oran': 30,
+                'kategoriler': ['Eğlence ve hobi', 'Dışarıda yemek', 'Alışveriş',
+                                'Seyahat ve tatil', 'Abonelikler']
             },
             'tasarruf': {
-                'tutar': tasarruf,
-                'oran': 20,
-                'kategoriler': [
-                    'Acil durum fonu',
-                    'Yatırım (hisse, altın, döviz)',
-                    'Emeklilik planı',
-                    'Büyük harcamalar'
-                ],
-                'yillik_birikim': tasarruf * 12
+                'tutar': net_gelir * 0.20, 'oran': 20,
+                'kategoriler': ['Acil durum fonu', 'Yatırım (hisse, altın, döviz)',
+                                'Emeklilik planı', 'Büyük harcamalar'],
+                'yillik_birikim': net_gelir * 0.20 * 12
             }
         }
 
 
 class YatirimHesaplayici:
-    """Yatırım ve tasarruf hesaplama sınıfı"""
-    
     PORTFOY_STRATEJILERI = {
         'dusuk': [
             {'ad': 'Vadeli TL Mevduat', 'oran': 50, 'yillik_getiri': 2.5},
-            {'ad': 'Devlet Tahvili', 'oran': 30, 'yillik_getiri': 2.3},
-            {'ad': 'Altın', 'oran': 20, 'yillik_getiri': 1.5}
+            {'ad': 'Devlet Tahvili',     'oran': 30, 'yillik_getiri': 2.3},
+            {'ad': 'Altın',              'oran': 20, 'yillik_getiri': 1.5},
         ],
         'orta': [
             {'ad': 'Hisse Senedi Fonu', 'oran': 40, 'yillik_getiri': 3.5},
-            {'ad': 'Vadeli Mevduat', 'oran': 30, 'yillik_getiri': 2.5},
-            {'ad': 'Altın', 'oran': 20, 'yillik_getiri': 1.5},
-            {'ad': 'Döviz', 'oran': 10, 'yillik_getiri': 2.0}
+            {'ad': 'Vadeli Mevduat',    'oran': 30, 'yillik_getiri': 2.5},
+            {'ad': 'Altın',             'oran': 20, 'yillik_getiri': 1.5},
+            {'ad': 'Döviz',             'oran': 10, 'yillik_getiri': 2.0},
         ],
         'yuksek': [
             {'ad': 'Hisse Senedi', 'oran': 50, 'yillik_getiri': 4.5},
-            {'ad': 'Kripto Para', 'oran': 20, 'yillik_getiri': 5.0},
-            {'ad': 'Hisse Fonu', 'oran': 20, 'yillik_getiri': 3.5},
-            {'ad': 'Altın', 'oran': 10, 'yillik_getiri': 1.5}
-        ]
+            {'ad': 'Kripto Para',  'oran': 20, 'yillik_getiri': 5.0},
+            {'ad': 'Hisse Fonu',   'oran': 20, 'yillik_getiri': 3.5},
+            {'ad': 'Altın',        'oran': 10, 'yillik_getiri': 1.5},
+        ],
     }
-    
+
     @classmethod
-    def yatirim_hesapla(cls, aylik_tasarruf: float, vade_ay: int, 
-                       risk_profili: str = 'orta') -> Dict:
-        """Yatırım planı hesapla"""
-        portfoy = cls.PORTFOY_STRATEJILERI.get(risk_profili, cls.PORTFOY_STRATEJILERI['orta'])
-        
+    def yatirim_hesapla(cls, aylik_tasarruf: float, vade_ay: int,
+                        risk_profili: str = 'orta') -> Dict:
+        portfoy = cls.PORTFOY_STRATEJILERI.get(risk_profili,
+                                                cls.PORTFOY_STRATEJILERI['orta'])
         toplam_birikim = aylik_tasarruf * vade_ay
-        
-        # Ortalama getiri hesapla
         ortalama_getiri = sum(y['yillik_getiri'] * y['oran'] / 100 for y in portfoy)
-        
-        # Bileşik getiri
         yil = vade_ay / 12
         beklenen_getiri = toplam_birikim * (pow(1 + ortalama_getiri / 100, yil) - 1)
         toplam_deger = toplam_birikim + beklenen_getiri
-        
-        # Dağılım
-        dagilim = []
-        for yatirim in portfoy:
-            miktar = toplam_birikim * yatirim['oran'] / 100
-            dagilim.append({
-                'ad': yatirim['ad'],
-                'oran': yatirim['oran'],
-                'miktar': miktar,
-                'getiri_orani': yatirim['yillik_getiri']
-            })
-        
-        # Uzun vadeli projeksiyon
+
+        dagilim = [
+            {'ad': y['ad'], 'oran': y['oran'],
+             'miktar': toplam_birikim * y['oran'] / 100,
+             'getiri_orani': y['yillik_getiri']}
+            for y in portfoy
+        ]
+
         projeksiyon = []
         for yil_sayisi in [1, 2, 3, 5, 10]:
-            ay = yil_sayisi * 12
-            birikim = aylik_tasarruf * ay
+            birikim = aylik_tasarruf * yil_sayisi * 12
             getiri = birikim * (pow(1 + ortalama_getiri / 100, yil_sayisi) - 1)
-            projeksiyon.append({
-                'yil': yil_sayisi,
-                'birikim': birikim,
-                'getiri': getiri,
-                'toplam': birikim + getiri
-            })
-        
+            projeksiyon.append({'yil': yil_sayisi, 'birikim': birikim,
+                                'getiri': getiri, 'toplam': birikim + getiri})
+
         return {
-            'risk_profili': risk_profili,
-            'vade_ay': vade_ay,
-            'aylik_tasarruf': aylik_tasarruf,
-            'toplam_birikim': toplam_birikim,
-            'ortalama_getiri': ortalama_getiri,
-            'beklenen_getiri': beklenen_getiri,
-            'toplam_deger': toplam_deger,
-            'portfoy_dagilimi': dagilim,
+            'risk_profili': risk_profili, 'vade_ay': vade_ay,
+            'aylik_tasarruf': aylik_tasarruf, 'toplam_birikim': toplam_birikim,
+            'ortalama_getiri': ortalama_getiri, 'beklenen_getiri': beklenen_getiri,
+            'toplam_deger': toplam_deger, 'portfoy_dagilimi': dagilim,
             'uzun_vade_projeksiyon': projeksiyon
         }
 
 
 class MaasZamHesaplayici:
-    """Maaş zammı ve enflasyon analizi"""
-    
     @staticmethod
-    def zam_analizi(mevcut_brut: float, zam_orani: float, 
+    def zam_analizi(mevcut_brut: float, zam_orani: float,
                     enflasyon: float) -> Dict:
-        """Maaş zammı ve reel kazanç hesapla"""
         yeni_brut = mevcut_brut * (1 + zam_orani / 100)
         artis = yeni_brut - mevcut_brut
-        
-        # Basitleştirilmiş net hesaplama (%35 kesinti)
         mevcut_net = mevcut_brut * 0.65
         yeni_net = yeni_brut * 0.65
         net_artis = yeni_net - mevcut_net
-        
-        # Reel zam hesaplama
         reel_zam = ((1 + zam_orani / 100) / (1 + enflasyon / 100) - 1) * 100
-        
         return {
-            'mevcut_brut': mevcut_brut,
-            'mevcut_net': mevcut_net,
-            'zam_orani': zam_orani,
-            'yeni_brut': yeni_brut,
-            'yeni_net': yeni_net,
-            'brut_artis': artis,
-            'net_artis': net_artis,
-            'enflasyon': enflasyon,
-            'reel_zam': reel_zam,
-            'durum': 'kazanc' if reel_zam > 0 else 'kayip',
-            'yillik_net_kazanc': net_artis * 12,
-            'besyillik_kazanc': net_artis * 60
+            'mevcut_brut': mevcut_brut, 'mevcut_net': mevcut_net,
+            'zam_orani': zam_orani, 'yeni_brut': yeni_brut, 'yeni_net': yeni_net,
+            'brut_artis': artis, 'net_artis': net_artis, 'enflasyon': enflasyon,
+            'reel_zam': reel_zam, 'durum': 'kazanc' if reel_zam > 0 else 'kayip',
+            'yillik_net_kazanc': net_artis * 12, 'besyillik_kazanc': net_artis * 60
         }
 
 
-def para_formatla(tutar: float) -> str:
-    """Türk Lirası formatında göster"""
-    return f"{tutar:,.2f} TL".replace(',', '.')
+# ─────────────────────────────────────────────
+#  YARDIMCI FONKSİYON
+# ─────────────────────────────────────────────
 
+def tl(tutar: float) -> str:
+    """₺ formatında göster"""
+    return f"₺{tutar:,.2f}".replace(',', 'X').replace('.', ',').replace('X', '.')
+
+
+# ─────────────────────────────────────────────
+#  STREAMLIT SAYFALAR
+# ─────────────────────────────────────────────
+
+def sayfa_tazminat():
+    st.header("💰 Tazminat Hesaplama")
+    st.caption("Kıdem · İhbar · Yıllık İzin tazminatlarını hesaplayın")
+
+    with st.form("tazminat_form"):
+        col1, col2 = st.columns(2)
+        with col1:
+            brut = st.number_input("Brüt Maaş (₺)", min_value=0.0,
+                                    value=50000.0, step=1000.0)
+            baslama = st.date_input("İşe Başlama Tarihi", value=date(2020, 1, 1))
+        with col2:
+            bitis = st.date_input("İşten Çıkış Tarihi", value=date.today())
+            kalan_izin = st.number_input("Kullanılmayan Yıllık İzin (Gün)",
+                                          min_value=0, value=0, step=1)
+
+        cikis_secenekleri = {
+            "İstifa (Kendi İsteğimle)":         "istifa",
+            "İşveren Feshi (Haklı Sebep Yok)":  "isverenFeshi",
+            "İşveren Feshi (Haklı Sebep)":       "hakliSebep",
+            "Emeklilik":                         "emeklilik",
+            "Ölüm":                              "olum",
+            "Askerlik":                          "askerlik",
+        }
+        cikis_secim = st.selectbox("İşten Çıkış Sebebi", list(cikis_secenekleri.keys()))
+        hesapla = st.form_submit_button("🔍 Hesapla", use_container_width=True)
+
+    if hesapla:
+        if bitis <= baslama:
+            st.error("Çıkış tarihi, başlama tarihinden sonra olmalıdır!")
+            return
+        cikis_sebebi = cikis_secenekleri[cikis_secim]
+        sonuc = TazminatHesaplayici.tam_hesaplama(
+            brut, str(baslama), str(bitis), cikis_sebebi, int(kalan_izin)
+        )
+        cs = sonuc['calisma_suresi']
+        t  = sonuc['tazminatlar']
+        k  = sonuc['kesintiler']
+
+        st.success(f"⏱️  Çalışma Süresi: **{cs['yil']} yıl {cs['gun']} gün**")
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Kıdem Tazminatı",   tl(t['kidem']) if t['kidem'] > 0 else "Hak Yok")
+        col2.metric("İhbar Tazminatı",   tl(t['ihbar']) if t['ihbar'] > 0 else "Hak Yok")
+        col3.metric("Yıllık İzin Ücreti", tl(t['yillik_izin']))
+
+        st.divider()
+        col4, col5, col6 = st.columns(3)
+        col4.metric("Brüt Toplam",   tl(t['toplam_brut']))
+        col5.metric("Toplam Kesinti", f"-{tl(k['toplam_kesinti'])}")
+        col6.metric("✅ NET ÖDEME",   tl(sonuc['net_tutar']))
+
+        if t['toplam_brut'] > 0:
+            fig = px.pie(
+                names=['SGK Kesintisi', 'Gelir Vergisi', 'Damga Vergisi', 'Net Tutar'],
+                values=[k['sgk'], k['gelir_vergisi'], k['damga'], sonuc['net_tutar']],
+                title="Tazminat Dağılımı",
+                color_discrete_sequence=px.colors.qualitative.Set3
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+
+def sayfa_bordro():
+    st.header("📊 Bordro Arşivi")
+    bm = BordroYonetim()
+
+    tab1, tab2, tab3 = st.tabs(["➕ Bordro Ekle", "📋 Bordrolar", "📈 İstatistikler"])
+
+    with tab1:
+        with st.form("bordro_ekle"):
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                ay = st.text_input("Ay (YYYY-MM)", placeholder="2026-01")
+            with col2:
+                brut = st.number_input("Brüt Maaş (₺)", min_value=0.0,
+                                        value=33030.0, step=500.0)
+            with col3:
+                net = st.number_input("Net Maaş (₺)", min_value=0.0,
+                                       value=28075.0, step=500.0)
+            ekle = st.form_submit_button("✅ Bordroyu Kaydet", use_container_width=True)
+        if ekle:
+            if bm.bordro_ekle(ay, brut, net):
+                st.success("Bordro başarıyla eklendi!")
+                st.rerun()
+            else:
+                st.error("Bordro eklenemedi! Ay formatını kontrol edin (YYYY-MM).")
+
+    with tab2:
+        bordrolar = bm.bordrolari_getir()
+        if not bordrolar:
+            st.info("Henüz bordro kaydı yok.")
+        else:
+            df = pd.DataFrame(bordrolar)
+            df_show = df[['id', 'ay', 'brut', 'net',
+                          'sgk_kesinti', 'gelir_vergisi', 'damga_vergisi']].copy()
+            df_show.columns = ['ID', 'Ay', 'Brüt (₺)', 'Net (₺)',
+                                'SGK (₺)', 'Gelir V. (₺)', 'Damga V. (₺)']
+            st.dataframe(df_show, use_container_width=True)
+
+            st.divider()
+            sil_id = st.number_input("Silmek istediğiniz Bordro ID:", min_value=1, step=1)
+            if st.button("🗑️ Seçili Bordroyu Sil"):
+                if bm.bordro_sil(int(sil_id)):
+                    st.success("Bordro silindi!")
+                    st.rerun()
+                else:
+                    st.error("Bordro silinemedi!")
+
+            fig = go.Figure()
+            fig.add_trace(go.Bar(x=df['ay'], y=df['brut'],
+                                  name='Brüt', marker_color='#636EFA'))
+            fig.add_trace(go.Bar(x=df['ay'], y=df['net'],
+                                  name='Net', marker_color='#00CC96'))
+            fig.update_layout(title='Aylık Brüt / Net Maaş', barmode='group',
+                               xaxis_title='Ay', yaxis_title='₺')
+            st.plotly_chart(fig, use_container_width=True)
+
+    with tab3:
+        stats = bm.istatistikler()
+        if stats['toplam'] == 0:
+            st.info("İstatistik için önce bordro ekleyin.")
+        else:
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Toplam Bordro",  stats['toplam'])
+            c2.metric("Ort. Brüt",      tl(stats['ortalama_brut']))
+            c3.metric("Ort. Net",       tl(stats['ortalama_net']))
+            c4.metric("Toplam Kesinti", tl(stats['toplam_kesinti']))
+
+
+def sayfa_asgari_ucret():
+    st.header("📈 Asgari Ücret Analizi (2020–2026)")
+
+    df = pd.DataFrame(AsgariUcretAnaliz.ASGARI_UCRETLER)
+    df['Dönem'] = df['yil'].astype(str) + "-" + df['donem'].astype(str) + ".D"
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=df['Dönem'], y=df['brut'],
+                              mode='lines+markers', name='Brüt',
+                              line=dict(color='#636EFA', width=3)))
+    fig.add_trace(go.Scatter(x=df['Dönem'], y=df['net'],
+                              mode='lines+markers', name='Net',
+                              line=dict(color='#00CC96', width=3)))
+    fig.update_layout(title='Asgari Ücret Tarihsel Trend',
+                      xaxis_title='Dönem', yaxis_title='₺', hovermode='x unified')
+    st.plotly_chart(fig, use_container_width=True)
+
+    artis_df = df[df['artis'] > 0].copy()
+    fig2 = px.bar(artis_df, x='Dönem', y='artis',
+                  title='Dönemsel Artış Oranları (%)',
+                  color='artis', color_continuous_scale='RdYlGn', text='artis')
+    fig2.update_traces(texttemplate='%{text:.1f}%', textposition='outside')
+    st.plotly_chart(fig2, use_container_width=True)
+
+    st.info(f"📌 **2020'den bu yana toplam artış: %{AsgariUcretAnaliz.toplam_artis()}**")
+
+    st.divider()
+    st.subheader("Maaş Katsayısı Analizi")
+    maas = st.number_input("Brüt Maaşınız (₺)", min_value=0.0,
+                            value=50000.0, step=1000.0)
+    if maas > 0:
+        analiz = AsgariUcretAnaliz.katsayi_hesapla(maas)
+        col1, col2 = st.columns(2)
+        col1.metric("Asgari Ücret Katsayısı", f"{analiz['katsayi']}x")
+        col2.metric("Asgari Ücretten Fark", tl(analiz['fark']))
+
+
+def sayfa_butce():
+    st.header("💳 50-30-20 Bütçe Planlaması")
+    st.info("**50-30-20 Kuralı:** %50 İhtiyaçlar · %30 İstekler · %20 Tasarruf")
+
+    net_gelir = st.number_input("Aylık Net Geliriniz (₺)", min_value=0.0,
+                                 value=28075.0, step=500.0)
+
+    if net_gelir > 0:
+        butce = ButcePlanlama.butce_hesapla(net_gelir)
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("🏠 İhtiyaçlar (%50)", tl(butce['ihtiyaclar']['tutar']))
+        col2.metric("🎉 İstekler (%30)",    tl(butce['istekler']['tutar']))
+        col3.metric("💰 Tasarruf (%20)",    tl(butce['tasarruf']['tutar']))
+
+        fig = px.pie(
+            names=['İhtiyaçlar', 'İstekler', 'Tasarruf'],
+            values=[butce['ihtiyaclar']['tutar'],
+                    butce['istekler']['tutar'],
+                    butce['tasarruf']['tutar']],
+            title="Bütçe Dağılımı",
+            color_discrete_sequence=['#EF553B', '#636EFA', '#00CC96']
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+        col4, col5 = st.columns(2)
+        with col4:
+            st.subheader("🏠 İhtiyaçlar")
+            for k in butce['ihtiyaclar']['kategoriler']:
+                st.write(f"• {k}")
+        with col5:
+            st.subheader("🎉 İstekler")
+            for k in butce['istekler']['kategoriler']:
+                st.write(f"• {k}")
+
+        st.divider()
+        st.success(
+            f"✅ 12 ayda biriktireceğiniz: "
+            f"**{tl(butce['tasarruf']['yillik_birikim'])}**"
+        )
+
+
+def sayfa_zam():
+    st.header("📊 Maaş Zammı Senaryoları")
+
+    with st.form("zam_form"):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            mevcut = st.number_input("Mevcut Brüt Maaş (₺)", min_value=0.0,
+                                      value=50000.0, step=1000.0)
+        with col2:
+            zam = st.number_input("Zam Oranı (%)", min_value=0.0,
+                                   value=30.0, step=0.5)
+        with col3:
+            enflasyon = st.number_input("Enflasyon Oranı (%)", min_value=0.0,
+                                         value=45.0, step=0.5)
+        hesapla = st.form_submit_button("📈 Hesapla", use_container_width=True)
+
+    if hesapla:
+        sonuc = MaasZamHesaplayici.zam_analizi(mevcut, zam, enflasyon)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.subheader("Öncesi")
+            st.metric("Brüt", tl(sonuc['mevcut_brut']))
+            st.metric("Net (~)", tl(sonuc['mevcut_net']))
+        with col2:
+            st.subheader("Sonrası")
+            st.metric("Brüt", tl(sonuc['yeni_brut']),
+                      delta=f"+{tl(sonuc['brut_artis'])}")
+            st.metric("Net (~)", tl(sonuc['yeni_net']),
+                      delta=f"+{tl(sonuc['net_artis'])}")
+
+        st.divider()
+        reel = sonuc['reel_zam']
+        if sonuc['durum'] == 'kazanc':
+            st.success(f"✅ Reel Zam: **%{reel:.2f}** — Aldığınız zam enflasyonun üzerinde!")
+        else:
+            st.warning(f"⚠️ Reel Zam: **%{reel:.2f}** — Aldığınız zam enflasyonun altında!")
+
+        col3, col4 = st.columns(2)
+        col3.metric("Yıllık Net Kazanç",   tl(sonuc['yillik_net_kazanc']))
+        col4.metric("5 Yıllık Net Kazanç", tl(sonuc['besyillik_kazanc']))
+
+        fig = go.Figure(go.Bar(
+            x=['Zam Oranı', 'Enflasyon', 'Reel Zam'],
+            y=[zam, enflasyon, reel],
+            marker_color=['#636EFA', '#EF553B',
+                          '#00CC96' if reel > 0 else '#EF553B'],
+            text=[f"%{v:.1f}" for v in [zam, enflasyon, reel]],
+            textposition='outside'
+        ))
+        fig.update_layout(title='Zam vs Enflasyon vs Reel Zam', yaxis_title='%')
+        st.plotly_chart(fig, use_container_width=True)
+
+
+def sayfa_yatirim():
+    st.header("🎯 Yatırım Tavsiyeleri")
+
+    with st.form("yatirim_form"):
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            tasarruf = st.number_input("Aylık Tasarruf (₺)", min_value=0.0,
+                                        value=5000.0, step=500.0)
+        with col2:
+            vade = st.number_input("Yatırım Süresi (Ay)", min_value=1,
+                                    value=36, step=1)
+        with col3:
+            risk_map = {
+                "Düşük Risk (Güvenli)":  "dusuk",
+                "Orta Risk (Dengeli)":   "orta",
+                "Yüksek Risk (Agresif)": "yuksek",
+            }
+            risk_label = st.selectbox("Risk Profili", list(risk_map.keys()), index=1)
+        hesapla = st.form_submit_button("💼 Hesapla", use_container_width=True)
+
+    if hesapla:
+        risk = risk_map[risk_label]
+        sonuc = YatirimHesaplayici.yatirim_hesapla(tasarruf, int(vade), risk)
+
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Toplam Birikim",   tl(sonuc['toplam_birikim']))
+        col2.metric("Beklenen Getiri", f"+{tl(sonuc['beklenen_getiri'])}")
+        col3.metric("💰 Toplam Değer", tl(sonuc['toplam_deger']))
+
+        col4, col5 = st.columns(2)
+        with col4:
+            df_dag = pd.DataFrame(sonuc['portfoy_dagilimi'])
+            fig = px.pie(df_dag, names='ad', values='oran',
+                         title=f"{risk_label} — Portföy Dağılımı",
+                         color_discrete_sequence=px.colors.qualitative.Set2)
+            st.plotly_chart(fig, use_container_width=True)
+
+        with col5:
+            df_proj = pd.DataFrame(sonuc['uzun_vade_projeksiyon'])
+            fig2 = go.Figure()
+            fig2.add_trace(go.Bar(
+                x=df_proj['yil'].astype(str) + " Yıl",
+                y=df_proj['birikim'], name='Birikim', marker_color='#636EFA'))
+            fig2.add_trace(go.Bar(
+                x=df_proj['yil'].astype(str) + " Yıl",
+                y=df_proj['getiri'], name='Getiri', marker_color='#00CC96'))
+            fig2.update_layout(title='Uzun Vadeli Projeksiyon', barmode='stack',
+                               xaxis_title='Süre', yaxis_title='₺')
+            st.plotly_chart(fig2, use_container_width=True)
+
+        st.subheader("📊 Önerilen Dağılım Tablosu")
+        df_tablo = df_dag.copy()
+        df_tablo['miktar'] = df_tablo['miktar'].apply(tl)
+        df_tablo.columns = ['Yatırım Aracı', 'Oran (%)', 'Tutar', 'Yıllık Getiri (%)']
+        st.dataframe(df_tablo, use_container_width=True)
+
+
+# ─────────────────────────────────────────────
+#  ANA UYGULAMA
+# ─────────────────────────────────────────────
 
 def main():
-    """Ana program"""
-    print("=" * 80)
-    print("💼 MaaşPro - Bordro & Finans Yönetim Sistemi")
-    print("=" * 80)
-    print()
-    
-    while True:
-        print("\n📋 ANA MENÜ")
-        print("-" * 80)
-        print("1. 💰 Tazminat Hesaplama (Kıdem, İhbar, Yıllık İzin)")
-        print("2. 📊 Bordro Arşivi Yönetimi")
-        print("3. 📈 Asgari Ücret Analizi")
-        print("4. 💳 50-30-20 Bütçe Planlaması")
-        print("5. 📊 Maaş Zammı Senaryoları")
-        print("6. 🎯 Yatırım Tavsiyeleri")
-        print("0. ❌ Çıkış")
-        print("-" * 80)
-        
-        secim = input("\nSeçiminiz (0-6): ").strip()
-        
-        if secim == "1":
-            tazminat_hesapla_menu()
-        elif secim == "2":
-            bordro_yonetim_menu()
-        elif secim == "3":
-            asgari_ucret_menu()
-        elif secim == "4":
-            butce_menu()
-        elif secim == "5":
-            zam_menu()
-        elif secim == "6":
-            yatirim_menu()
-        elif secim == "0":
-            print("\n👋 MaaşPro'yu kullandığınız için teşekkürler!")
-            break
-        else:
-            print("\n❌ Geçersiz seçim! Lütfen 0-6 arası bir değer girin.")
+    st.set_page_config(
+        page_title="MaaşPro – Bordro & Finans",
+        page_icon="💼",
+        layout="wide",
+        initial_sidebar_state="expanded"
+    )
 
+    st.sidebar.title("💼 MaaşPro")
+    st.sidebar.caption("Bordro & Finans Yönetim Sistemi")
+    st.sidebar.divider()
 
-def tazminat_hesapla_menu():
-    """Tazminat hesaplama menüsü"""
-    print("\n" + "=" * 80)
-    print("💰 TAZMİNAT HESAPLAMA")
-    print("=" * 80)
-    
-    try:
-        brut = float(input("\nBrüt Maaş (TL): "))
-        baslama = input("İşe Başlama Tarihi (YYYY-MM-DD): ")
-        bitis = input("İşten Çıkış Tarihi (YYYY-MM-DD): ")
-        
-        print("\nİşten Çıkış Sebebi:")
-        print("1. İstifa (Kendi İsteğimle)")
-        print("2. İşveren Feshi (Haklı Sebep Yok)")
-        print("3. İşveren Feshi (Haklı Sebep)")
-        print("4. Emeklilik")
-        print("5. Ölüm")
-        print("6. Askerlik")
-        
-        sebep_map = {
-            '1': 'istifa',
-            '2': 'isverenFeshi',
-            '3': 'hakliSebep',
-            '4': 'emeklilik',
-            '5': 'olum',
-            '6': 'askerlik'
-        }
-        
-        sebep_secim = input("Seçim (1-6): ")
-        cikis_sebebi = sebep_map.get(sebep_secim, 'istifa')
-        
-        kalan_izin = int(input("Kullanılmayan Yıllık İzin (Gün): ") or "0")
-        
-        sonuc = TazminatHesaplayici.tam_hesaplama(
-            brut, baslama, bitis, cikis_sebebi, kalan_izin
-        )
-        
-        print("\n" + "=" * 80)
-        print("📋 HESAPLAMA SONUÇLARI")
-        print("=" * 80)
-        
-        cs = sonuc['calisma_suresi']
-        print(f"\n⏱️  Çalışma Süresi: {cs['yil']} yıl {cs['gun']} gün")
-        
-        print("\n💵 TAZMİNATLAR:")
-        print("-" * 80)
-        t = sonuc['tazminatlar']
-        if t['kidem'] > 0:
-            print(f"  Kıdem Tazminatı    : {para_formatla(t['kidem'])}")
-        else:
-            print(f"  Kıdem Tazminatı    : HAK YOK")
-        
-        if t['ihbar'] > 0:
-            print(f"  İhbar Tazminatı    : {para_formatla(t['ihbar'])}")
-        
-        if t['yillik_izin'] > 0:
-            print(f"  Yıllık İzin Ücreti : {para_formatla(t['yillik_izin'])}")
-        
-        print(f"\n  BRÜT TOPLAM        : {para_formatla(t['toplam_brut'])}")
-        
-        print("\n💸 KESİNTİLER:")
-        print("-" * 80)
-        k = sonuc['kesintiler']
-        print(f"  SGK Kesintisi      : -{para_formatla(k['sgk'])}")
-        print(f"  Gelir Vergisi      : -{para_formatla(k['gelir_vergisi'])}")
-        print(f"  Damga Vergisi      : -{para_formatla(k['damga'])}")
-        print(f"  Toplam Kesinti     : -{para_formatla(k['toplam_kesinti'])}")
-        
-        print("\n" + "=" * 80)
-        print(f"✅ NET ÖDEME: {para_formatla(sonuc['net_tutar'])}")
-        print("=" * 80)
-        
-    except Exception as e:
-        print(f"\n❌ Hata: {e}")
+    menu = {
+        "💰 Tazminat Hesaplama":    sayfa_tazminat,
+        "📊 Bordro Arşivi":         sayfa_bordro,
+        "📈 Asgari Ücret Analizi":  sayfa_asgari_ucret,
+        "💳 50-30-20 Bütçe Planı":  sayfa_butce,
+        "📊 Maaş Zammı Senaryoları": sayfa_zam,
+        "🎯 Yatırım Tavsiyeleri":   sayfa_yatirim,
+    }
 
+    secim = st.sidebar.radio("Menü", list(menu.keys()))
+    st.sidebar.divider()
+    st.sidebar.caption("by Göksel · 2026")
 
-def bordro_yonetim_menu():
-    """Bordro yönetim menüsü"""
-    bm = BordroYonetim()
-    
-    while True:
-        print("\n" + "=" * 80)
-        print("📊 BORDRO ARŞİVİ YÖNETİMİ")
-        print("=" * 80)
-        print("1. Yeni Bordro Ekle")
-        print("2. Bordroları Listele")
-        print("3. İstatistikleri Göster")
-        print("4. Bordro Sil")
-        print("0. Ana Menüye Dön")
-        
-        secim = input("\nSeçim: ").strip()
-        
-        if secim == "1":
-            try:
-                ay = input("\nAy (YYYY-MM): ")
-                brut = float(input("Brüt Maaş: "))
-                net = float(input("Net Maaş: "))
-                
-                if bm.bordro_ekle(ay, brut, net):
-                    print("\n✅ Bordro başarıyla eklendi!")
-                else:
-                    print("\n❌ Bordro eklenemedi!")
-            except:
-                print("\n❌ Geçersiz giriş!")
-        
-        elif secim == "2":
-            bordrolar = bm.bordrolari_getir()
-            if not bordrolar:
-                print("\n⚠️  Henüz bordro kaydı yok.")
-            else:
-                print(f"\n📋 TOPLAM {len(bordrolar)} BORDRO:")
-                print("-" * 80)
-                for b in bordrolar:
-                    print(f"\n#{b['id']} - {b['ay']}")
-                    print(f"  Brüt: {para_formatla(b['brut'])} | Net: {para_formatla(b['net'])}")
-        
-        elif secim == "3":
-            stats = bm.istatistikler()
-            print("\n" + "=" * 80)
-            print("📊 İSTATİSTİKLER")
-            print("=" * 80)
-            print(f"Toplam Bordro Sayısı : {stats['toplam']}")
-            print(f"Ortalama Brüt Maaş  : {para_formatla(stats['ortalama_brut'])}")
-            print(f"Ortalama Net Maaş   : {para_formatla(stats['ortalama_net'])}")
-            print(f"Toplam Kazanç       : {para_formatla(stats['toplam_kazanc'])}")
-            print(f"Toplam Kesinti      : {para_formatla(stats['toplam_kesinti'])}")
-        
-        elif secim == "4":
-            try:
-                bordro_id = int(input("\nSilinecek Bordro ID: "))
-                if bm.bordro_sil(bordro_id):
-                    print("\n✅ Bordro silindi!")
-                else:
-                    print("\n❌ Bordro silinemedi!")
-            except:
-                print("\n❌ Geçersiz ID!")
-        
-        elif secim == "0":
-            break
-
-
-def asgari_ucret_menu():
-    """Asgari ücret analizi menüsü"""
-    print("\n" + "=" * 80)
-    print("📈 ASGARİ ÜCRET ANALİZİ (2020-2026)")
-    print("=" * 80)
-    
-    print("\n📊 YILLARA GÖRE ASGARİ ÜCRET:")
-    print("-" * 80)
-    print(f"{'Yıl':<8} {'Dönem':<10} {'Brüt':>15} {'Net':>15} {'Artış':>10}")
-    print("-" * 80)
-    
-    for au in AsgariUcretAnaliz.ASGARI_UCRETLER:
-        print(f"{au['yil']:<8} {au['donem']}. Dönem  "
-              f"{para_formatla(au['brut']):>15} "
-              f"{para_formatla(au['net']):>15} "
-              f"%{au['artis']:>8.2f}")
-    
-    print("\n" + "=" * 80)
-    print(f"📌 2020'den bu yana TOPLAM ARTIŞ: %{AsgariUcretAnaliz.toplam_artis()}")
-    print("=" * 80)
-    
-    try:
-        maas = float(input("\nMaaşınız (Brüt TL): "))
-        analiz = AsgariUcretAnaliz.katsayi_hesapla(maas)
-        
-        print(f"\n✅ Maaşınız 2026 asgari ücretin {analiz['katsayi']}x katıdır")
-        print(f"   Asgari ücretten {para_formatla(analiz['fark'])} fazla kazanıyorsunuz")
-    except:
-        pass
-
-
-def butce_menu():
-    """Bütçe planlama menüsü"""
-    print("\n" + "=" * 80)
-    print("💳 50-30-20 BÜTÇE PLANLAMASI")
-    print("=" * 80)
-    print("\n📌 50-30-20 Kuralı:")
-    print("  • %50 - İhtiyaçlar (zorunlu giderler)")
-    print("  • %30 - İstekler (opsiyonel harcamalar)")
-    print("  • %20 - Tasarruf ve Yatırım")
-    
-    try:
-        net_gelir = float(input("\nAylık Net Geliriniz: "))
-        butce = ButcePlanlama.butce_hesapla(net_gelir)
-        
-        print("\n" + "=" * 80)
-        print("📊 BÜTÇE PLANI")
-        print("=" * 80)
-        
-        print(f"\n🏠 İHTİYAÇLAR (%50): {para_formatla(butce['ihtiyaclar']['tutar'])}")
-        for kat in butce['ihtiyaclar']['kategoriler']:
-            print(f"   • {kat}")
-        
-        print(f"\n🎉 İSTEKLER (%30): {para_formatla(butce['istekler']['tutar'])}")
-        for kat in butce['istekler']['kategoriler']:
-            print(f"   • {kat}")
-        
-        print(f"\n💰 TASARRUF (%20): {para_formatla(butce['tasarruf']['tutar'])}")
-        for kat in butce['tasarruf']['kategoriler']:
-            print(f"   • {kat}")
-        
-        print(f"\n✅ 12 ayda biriktireceğiniz: {para_formatla(butce['tasarruf']['yillik_birikim'])}")
-        
-    except Exception as e:
-        print(f"\n❌ Hata: {e}")
-
-
-def zam_menu():
-    """Maaş zammı menüsü"""
-    print("\n" + "=" * 80)
-    print("📊 MAAŞ ZAMMI SENARYOLARI")
-    print("=" * 80)
-    
-    try:
-        mevcut = float(input("\nMevcut Brüt Maaş: "))
-        zam = float(input("Zam Oranı (%): "))
-        enflasyon = float(input("Enflasyon Oranı (%): "))
-        
-        sonuc = MaasZamHesaplayici.zam_analizi(mevcut, zam, enflasyon)
-        
-        print("\n" + "=" * 80)
-        print("📈 ZAM ANALİZİ")
-        print("=" * 80)
-        
-        print(f"\nMevcut Brüt: {para_formatla(sonuc['mevcut_brut'])}")
-        print(f"Mevcut Net : {para_formatla(sonuc['mevcut_net'])}")
-        print(f"\nZam Oranı  : %{sonuc['zam_orani']}")
-        print(f"\nYeni Brüt  : {para_formatla(sonuc['yeni_brut'])}")
-        print(f"Yeni Net   : {para_formatla(sonuc['yeni_net'])}")
-        print(f"\nBrüt Artış : +{para_formatla(sonuc['brut_artis'])}")
-        print(f"Net Artış  : +{para_formatla(sonuc['net_artis'])}")
-        
-        print(f"\n{'='*80}")
-        print(f"Enflasyon     : %{sonuc['enflasyon']}")
-        print(f"REEL ZAM      : %{sonuc['reel_zam']:.2f}")
-        
-        if sonuc['durum'] == 'kazanc':
-            print(f"\n✅ Aldığınız zam enflasyonun üzerinde!")
-            print(f"   Reel olarak kazanç sağlıyorsunuz.")
-        else:
-            print(f"\n⚠️  Aldığınız zam enflasyonun altında!")
-            print(f"   Reel olarak kayıp yaşıyorsunuz.")
-        
-        print(f"\n💵 Yıllık net kazanç  : {para_formatla(sonuc['yillik_net_kazanc'])}")
-        print(f"💰 5 yıllık kazanç    : {para_formatla(sonuc['besyillik_kazanc'])}")
-        print("=" * 80)
-        
-    except Exception as e:
-        print(f"\n❌ Hata: {e}")
-
-
-def yatirim_menu():
-    """Yatırım tavsiyeleri menüsü"""
-    print("\n" + "=" * 80)
-    print("🎯 YATIRIM TAVSİYELERİ")
-    print("=" * 80)
-    
-    try:
-        tasarruf = float(input("\nAylık Tasarruf Tutarı: "))
-        vade = int(input("Yatırım Süresi (Ay): "))
-        
-        print("\nRisk Profili:")
-        print("1. Düşük Risk (Güvenli)")
-        print("2. Orta Risk (Dengeli)")
-        print("3. Yüksek Risk (Agresif)")
-        
-        risk_map = {'1': 'dusuk', '2': 'orta', '3': 'yuksek'}
-        risk_secim = input("Seçim (1-3): ")
-        risk = risk_map.get(risk_secim, 'orta')
-        
-        sonuc = YatirimHesaplayici.yatirim_hesapla(tasarruf, vade, risk)
-        
-        print("\n" + "=" * 80)
-        print("💼 YATIRIM PORTFÖYÜ")
-        print("=" * 80)
-        
-        print(f"\nRisk Profili       : {sonuc['risk_profili'].upper()}")
-        print(f"Yatırım Süresi     : {sonuc['vade_ay']} ay")
-        print(f"Aylık Tasarruf     : {para_formatla(sonuc['aylik_tasarruf'])}")
-        print(f"\nToplam Birikim     : {para_formatla(sonuc['toplam_birikim'])}")
-        print(f"Beklenen Getiri    : +{para_formatla(sonuc['beklenen_getiri'])}")
-        print(f"Ortalama Getiri    : %{sonuc['ortalama_getiri']:.2f}")
-        print(f"\n{'='*80}")
-        print(f"💰 TOPLAM DEĞER: {para_formatla(sonuc['toplam_deger'])}")
-        print("=" * 80)
-        
-        print("\n📊 ÖNERİLEN DAĞILIM:")
-        print("-" * 80)
-        for y in sonuc['portfoy_dagilimi']:
-            print(f"{y['ad']:<25} %{y['oran']:<3} → {para_formatla(y['miktar'])}")
-        
-        print("\n📈 UZUN VADELİ PROJEKSİYON:")
-        print("-" * 80)
-        print(f"{'Süre':<10} {'Birikim':>20} {'Getiri':>20} {'Toplam':>20}")
-        print("-" * 80)
-        
-        for p in sonuc['uzun_vade_projeksiyon']:
-            print(f"{p['yil']} Yıl    "
-                  f"{para_formatla(p['birikim']):>20} "
-                  f"{para_formatla(p['getiri']):>20} "
-                  f"{para_formatla(p['toplam']):>20}")
-        
-    except Exception as e:
-        print(f"\n❌ Hata: {e}")
+    menu[secim]()
 
 
 if __name__ == "__main__":
