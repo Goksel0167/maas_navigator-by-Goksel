@@ -177,17 +177,38 @@ class TazminatHesaplayici:
         calisma_yil_desimal = yil + (gun / 365)
         kidem = cls.kidem_tazminati_hesapla(brut_maas, yil, gun, cikis_sebebi)
         ihbar = cls.ihbar_tazminati_hesapla(brut_maas, calisma_yil_desimal, cikis_sebebi)
-        yillik_izin = cls.yillik_izin_ucreti_hesapla(brut_maas, kalan_izin)
-        toplam_brut = kidem + ihbar + yillik_izin
-        if toplam_brut > 0:
-            kesintiler = cls.vergi_kesintileri_hesapla(toplam_brut)
+
+        # ─ Yıllık izin ücreti: günlük brüt = brut/30; ayrı kesinti uygulanır ─
+        yillik_izin_brut = cls.yillik_izin_ucreti_hesapla(brut_maas, kalan_izin)
+        if yillik_izin_brut > 0:
+            yi_kes = cls.vergi_kesintileri_hesapla(yillik_izin_brut)
         else:
-            kesintiler = {'sgk': 0, 'gelir_vergisi': 0, 'damga': 0, 'toplam_kesinti': 0}
-        net_tutar = toplam_brut - kesintiler['toplam_kesinti']
+            yi_kes = {'sgk': 0, 'gelir_vergisi': 0, 'damga': 0, 'toplam_kesinti': 0}
+        yillik_izin_net = yillik_izin_brut - yi_kes['toplam_kesinti']
+
+        # ─ Kıdem + İhbar kendi toplamı üzerine vergilendirilir ─
+        ki_brut = kidem + ihbar
+        if ki_brut > 0:
+            ki_kes = cls.vergi_kesintileri_hesapla(ki_brut)
+        else:
+            ki_kes = {'sgk': 0, 'gelir_vergisi': 0, 'damga': 0, 'toplam_kesinti': 0}
+        ki_net = ki_brut - ki_kes['toplam_kesinti']
+
+        toplam_brut = ki_brut + yillik_izin_brut
+        kesintiler = {
+            'sgk': ki_kes['sgk'] + yi_kes['sgk'],
+            'gelir_vergisi': ki_kes['gelir_vergisi'] + yi_kes['gelir_vergisi'],
+            'damga': ki_kes['damga'] + yi_kes['damga'],
+            'toplam_kesinti': ki_kes['toplam_kesinti'] + yi_kes['toplam_kesinti']
+        }
+        net_tutar = ki_net + yillik_izin_net
+
         return {
             'calisma_suresi': {'yil': yil, 'gun': gun, 'toplam_yil': calisma_yil_desimal},
             'tazminatlar': {'kidem': kidem, 'ihbar': ihbar,
-                            'yillik_izin': yillik_izin, 'toplam_brut': toplam_brut},
+                            'yillik_izin_brut': yillik_izin_brut,
+                            'yillik_izin_net': yillik_izin_net,
+                            'toplam_brut': toplam_brut},
             'kesintiler': kesintiler,
             'net_tutar': net_tutar
         }
@@ -386,9 +407,10 @@ def sayfa_tazminat():
         st.success(f"⏱️  Çalışma Süresi: **{cs['yil']} yıl {cs['gun']} gün**")
 
         col1, col2, col3 = st.columns(3)
-        col1.metric("Kıdem Tazminatı",   tl(t['kidem']) if t['kidem'] > 0 else "Hak Yok")
-        col2.metric("İhbar Tazminatı",   tl(t['ihbar']) if t['ihbar'] > 0 else "Hak Yok")
-        col3.metric("Yıllık İzin Ücreti", tl(t['yillik_izin']))
+        col1.metric("Kıdem Tazminatı",        tl(t['kidem']) if t['kidem'] > 0 else "Hak Yok")
+        col2.metric("İhbar Tazminatı",        tl(t['ihbar']) if t['ihbar'] > 0 else "Hak Yok")
+        yi_label = f"Yıllık İzin (Net)  brüt: {tl(t['yillik_izin_brut'])}" if t['yillik_izin_brut'] > 0 else "Yıllık İzin"
+        col3.metric(yi_label, tl(t['yillik_izin_net']) if t['yillik_izin_net'] > 0 else "-")
 
         st.divider()
         col4, col5, col6 = st.columns(3)
