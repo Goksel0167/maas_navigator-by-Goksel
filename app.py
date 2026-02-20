@@ -687,7 +687,7 @@ def sayfa_bordro():
                 st.session_state[duz_key] = None
 
             basliklar = st.columns([1.2, 1.8, 1.8, 1.8, 1.8, 1.8, 1, 1])
-            for h, lbl in zip(basliklar, ['Ay', 'Sabit Brüt', 'Prim', 'Toplam Brüt', 'Net', 'Kesinti', '✏️', '🗑️']):
+            for h, lbl in zip(basliklar, ['Ay', 'Sabit Brüt', 'Prim', 'Toplam Brüt', 'Net Maaş', 'Kesinti', '✏️', '🗑️']):
                 h.markdown(f"**{lbl}**")
 
             for _, satir in df_yil.iterrows():
@@ -707,7 +707,7 @@ def sayfa_bordro():
                             "Satış Primi (₺)", value=float(satir['satis_primi']),
                             min_value=0.0, step=500.0, key=f'p_{rid}')
                         yeni_net   = fc3.number_input(
-                            "Net (₺)", value=float(satir['net']),
+                            "Net Maaş (₺)", value=float(satir['net']),
                             min_value=0.0, step=500.0, key=f'n_{rid}')
                         toplam_preview = yeni_sabit + yeni_prim
                         st.caption(f"Toplam Brüt: **{tl(toplam_preview)}** "
@@ -751,8 +751,8 @@ def sayfa_bordro():
             fig.add_trace(go.Bar(x=ay_labels, y=df_yil['satis_primi'],
                                   name='Satış Primi', marker_color='#FFA15A'))
             fig.add_trace(go.Bar(x=ay_labels, y=df_yil['net'],
-                                  name='Net', marker_color='#00CC96'))
-            fig.update_layout(title=f'{secili_yil} — Aylık Brüt Dağılımı & Net',
+                                  name='Net Maaş', marker_color='#00CC96'))
+            fig.update_layout(title=f'{secili_yil} — Aylık Brüt Dağılımı & Net Maaş',
                                barmode='stack', xaxis_title='Ay', yaxis_title='₺')
             st.plotly_chart(fig, use_container_width=True)
 
