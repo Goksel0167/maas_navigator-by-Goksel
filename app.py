@@ -481,12 +481,40 @@ def sayfa_tazminat():
             st.plotly_chart(fig, use_container_width=True)
 
 
+def _vergi_dilimi(brut_aylik: float) -> str:
+    """Aylık brüt maaşa göre hangi gelir vergisi dilimine girdiğini göster"""
+    # Yıllık matrah tahmini (12 ay, SGK sonrası)
+    yillik = brut_aylik * 12 * 0.86   # SGK %14 düşülmüş yaklaşık matrah
+    if yillik <= 110000:
+        return "%15 (1. Dilim)"
+    elif yillik <= 230000:
+        return "%20 (2. Dilim)"
+    elif yillik <= 580000:
+        return "%27 (3. Dilim)"
+    elif yillik <= 3000000:
+        return "%35 (4. Dilim)"
+    else:
+        return "%40 (5. Dilim)"
+
+def _dilim_rengi(dilim: str) -> str:
+    return {"1": "🟢", "2": "🟡", "3": "🟠", "4": "🔴", "5": "🟣"}.get(
+        dilim.split(".")[0].replace("%15 (", "").replace("%20 (", "")
+        .replace("%27 (", "").replace("%35 (", "").replace("%40 (", "")
+        .replace(" Dilim)", "").strip(), "⚪")
+
 def sayfa_bordro():
     st.header("📊 Bordro Arşivi")
     bm = BordroYonetim()
 
-    tab1, tab2, tab3 = st.tabs(["➕ Bordro Ekle", "📋 Bordrolar", "📈 İstatistikler"])
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "➕ Bordro Ekle",
+        "📅 Yıllara Göre",
+        "📊 Maaş Zammı Analizi",
+        "🧮 Vergi Dilimi Karşılaştırması",
+        "📈 İstatistikler"
+    ])
 
+    # ── TAB 1: BORDRO EKLE ────────────────────────────────────────────────
     with tab1:
         with st.form("bordro_ekle"):
             col1, col2, col3 = st.columns(3)
@@ -506,37 +534,253 @@ def sayfa_bordro():
             else:
                 st.error("Bordro eklenemedi! Ay formatını kontrol edin (YYYY-MM).")
 
+        st.divider()
+        st.caption("🗑️ Bordro Sil")
+        sil_id = st.number_input("Silmek istediğiniz Bordro ID:", min_value=1, step=1)
+        if st.button("🗑️ Seçili Bordroyu Sil"):
+            if bm.bordro_sil(int(sil_id)):
+                st.success("Bordro silindi!")
+                st.rerun()
+            else:
+                st.error("Bordro silinemedi!")
+
+    # ── TAB 2: YILLARA GÖRE ───────────────────────────────────────────────
     with tab2:
         bordrolar = bm.bordrolari_getir()
         if not bordrolar:
             st.info("Henüz bordro kaydı yok.")
         else:
             df = pd.DataFrame(bordrolar)
-            df_show = df[['id', 'ay', 'brut', 'net',
-                          'sgk_kesinti', 'gelir_vergisi', 'damga_vergisi']].copy()
+            df['yil'] = df['ay'].str[:4]
+            yillar = sorted(df['yil'].unique(), reverse=True)
+
+            secili_yil = st.selectbox("Yıl Seç", yillar)
+
+            df_yil = df[df['yil'] == secili_yil].sort_values('ay')
+            df_show = df_yil[['id', 'ay', 'brut', 'net',
+                               'sgk_kesinti', 'gelir_vergisi', 'damga_vergisi']].copy()
             df_show.columns = ['ID', 'Ay', 'Brüt (₺)', 'Net (₺)',
                                 'SGK (₺)', 'Gelir V. (₺)', 'Damga V. (₺)']
-            st.dataframe(df_show, use_container_width=True)
 
-            st.divider()
-            sil_id = st.number_input("Silmek istediğiniz Bordro ID:", min_value=1, step=1)
-            if st.button("🗑️ Seçili Bordroyu Sil"):
-                if bm.bordro_sil(int(sil_id)):
-                    st.success("Bordro silindi!")
-                    st.rerun()
-                else:
-                    st.error("Bordro silinemedi!")
+            # Özet metrikler
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric(f"{secili_yil} Toplam Kayıt", len(df_yil))
+            c2.metric("Ort. Brüt", tl(df_yil['brut'].mean()))
+            c3.metric("Ort. Net",  tl(df_yil['net'].mean()))
+            c4.metric("Toplam Kazanç", tl(df_yil['brut'].sum()))
 
+            st.dataframe(df_show, use_container_width=True, hide_index=True)
+
+            # Yıl içi brüt/net grafik
+            ay_labels = df_yil['ay'].tolist()
             fig = go.Figure()
-            fig.add_trace(go.Bar(x=df['ay'], y=df['brut'],
+            fig.add_trace(go.Bar(x=ay_labels, y=df_yil['brut'],
                                   name='Brüt', marker_color='#636EFA'))
-            fig.add_trace(go.Bar(x=df['ay'], y=df['net'],
+            fig.add_trace(go.Bar(x=ay_labels, y=df_yil['net'],
                                   name='Net', marker_color='#00CC96'))
-            fig.update_layout(title='Aylık Brüt / Net Maaş', barmode='group',
-                               xaxis_title='Ay', yaxis_title='₺')
+            fig.add_trace(go.Bar(x=ay_labels,
+                                  y=df_yil['sgk_kesinti'] + df_yil['gelir_vergisi'] + df_yil['damga_vergisi'],
+                                  name='Toplam Kesinti', marker_color='#EF553B'))
+            fig.update_layout(title=f'{secili_yil} — Aylık Brüt / Net / Kesinti',
+                               barmode='group', xaxis_title='Ay', yaxis_title='₺')
             st.plotly_chart(fig, use_container_width=True)
 
+            # Tüm yıllar özet
+            st.divider()
+            st.subheader("📋 Tüm Yıllar Özeti")
+            ozet_rows = []
+            for y in sorted(yillar):
+                dy = df[df['yil'] == y]
+                ozet_rows.append({
+                    'Yıl': y,
+                    'Kayıt':       len(dy),
+                    'Ort. Brüt':   dy['brut'].mean(),
+                    'Ort. Net':    dy['net'].mean(),
+                    'Toplam Brüt': dy['brut'].sum(),
+                    'Toplam Kesinti': (dy['brut'] - dy['net']).sum()
+                })
+            df_ozet = pd.DataFrame(ozet_rows)
+            for col in ['Ort. Brüt', 'Ort. Net', 'Toplam Brüt', 'Toplam Kesinti']:
+                df_ozet[col] = df_ozet[col].apply(tl)
+            st.dataframe(df_ozet, use_container_width=True, hide_index=True)
+
+    # ── TAB 3: MAAŞ ZAMMI ANALİZİ ────────────────────────────────────────
     with tab3:
+        bordrolar = bm.bordrolari_getir()
+        if not bordrolar:
+            st.info("Henüz bordro kaydı yok.")
+        else:
+            df = pd.DataFrame(bordrolar)
+            df['yil']  = df['ay'].str[:4].astype(int)
+            df['ay_no'] = df['ay'].str[5:7].astype(int)
+
+            st.info("📌 Her yılın **Şubat** bordrosu baz alınır. Şubat yoksa yılın ilk ayı kullanılır.")
+
+            # Her yıl için temsil bordrosu: önce Şubat, yoksa en küçük ay
+            baz_rows = []
+            for yil, grp in df.groupby('yil'):
+                sub = grp[grp['ay_no'] == 2]
+                if sub.empty:
+                    sub = grp.sort_values('ay_no').head(1)
+                row = sub.sort_values('ay_no').iloc[0]
+                baz_rows.append({
+                    'yil': yil,
+                    'ay':  row['ay'],
+                    'brut': row['brut'],
+                    'net':  row['net'],
+                    'sgk':  row['sgk_kesinti'],
+                    'gv':   row['gelir_vergisi'],
+                    'dv':   row['damga_vergisi'],
+                })
+            df_baz = pd.DataFrame(baz_rows).sort_values('yil').reset_index(drop=True)
+
+            # Yıllık zam hesapla
+            df_baz['brut_zam_%']  = df_baz['brut'].pct_change() * 100
+            df_baz['net_zam_%']   = df_baz['net'].pct_change()  * 100
+            df_baz['kesinti_%']   = (df_baz['sgk'] + df_baz['gv'] + df_baz['dv']) / df_baz['brut'] * 100
+
+            # Kart gösterimi
+            for i, row in df_baz.iterrows():
+                onceki = df_baz.iloc[i - 1] if i > 0 else None
+                with st.expander(
+                    f"{'📅' if row['ay'].endswith('-02') else '📌'} "
+                    f"{row['yil']} — Baz: {row['ay']} | "
+                    f"Brüt: {tl(row['brut'])} | Net: {tl(row['net'])}", expanded=(i == len(df_baz)-1)
+                ):
+                    c1, c2, c3, c4 = st.columns(4)
+                    c1.metric("Brüt Maaş", tl(row['brut']),
+                              delta=f"%{row['brut_zam_%']:.1f}" if onceki is not None else None)
+                    c2.metric("Net Maaş",  tl(row['net']),
+                              delta=f"%{row['net_zam_%']:.1f}" if onceki is not None else None)
+                    c3.metric("Toplam Kesinti",
+                              tl(row['sgk'] + row['gv'] + row['dv']),
+                              delta=f"%{row['kesinti_%']:.1f} oran" if onceki is not None else None,
+                              delta_color="inverse")
+                    c4.metric("Vergi Dilimi", _vergi_dilimi(row['brut']))
+
+            st.divider()
+            # Karşılaştırma grafiği
+            col_g1, col_g2 = st.columns(2)
+            with col_g1:
+                fig1 = go.Figure()
+                fig1.add_trace(go.Scatter(
+                    x=df_baz['yil'].astype(str), y=df_baz['brut'],
+                    mode='lines+markers+text', name='Brüt',
+                    text=df_baz['brut'].apply(tl), textposition='top center',
+                    line=dict(color='#636EFA', width=3)))
+                fig1.add_trace(go.Scatter(
+                    x=df_baz['yil'].astype(str), y=df_baz['net'],
+                    mode='lines+markers+text', name='Net',
+                    text=df_baz['net'].apply(tl), textposition='bottom center',
+                    line=dict(color='#00CC96', width=3)))
+                fig1.update_layout(title='Yıllık Brüt / Net Trend (Şubat Baz)',
+                                   xaxis_title='Yıl', yaxis_title='₺')
+                st.plotly_chart(fig1, use_container_width=True)
+
+            with col_g2:
+                df_zam = df_baz.dropna(subset=['brut_zam_%'])
+                fig2 = go.Figure()
+                fig2.add_trace(go.Bar(
+                    x=df_zam['yil'].astype(str), y=df_zam['brut_zam_%'].round(1),
+                    name='Brüt Zam %', marker_color='#636EFA',
+                    text=df_zam['brut_zam_%'].round(1).astype(str) + '%',
+                    textposition='outside'))
+                fig2.add_trace(go.Bar(
+                    x=df_zam['yil'].astype(str), y=df_zam['net_zam_%'].round(1),
+                    name='Net Zam %', marker_color='#00CC96',
+                    text=df_zam['net_zam_%'].round(1).astype(str) + '%',
+                    textposition='outside'))
+                fig2.update_layout(title='Yıllık Zam Oranları (%)',
+                                   barmode='group', xaxis_title='Yıl', yaxis_title='%')
+                st.plotly_chart(fig2, use_container_width=True)
+
+    # ── TAB 4: VERGİ DİLİMİ KARŞILAŞTIRMASI ─────────────────────────────
+    with tab4:
+        bordrolar = bm.bordrolari_getir()
+        if not bordrolar:
+            st.info("Henüz bordro kaydı yok.")
+        else:
+            df = pd.DataFrame(bordrolar)
+            df['yil']   = df['ay'].str[:4].astype(int)
+            df['ay_no'] = df['ay'].str[5:7].astype(int)
+
+            # Her yıl için Şubat/ilk ay baz
+            dilim_rows = []
+            for yil, grp in df.groupby('yil'):
+                sub = grp[grp['ay_no'] == 2]
+                if sub.empty:
+                    sub = grp.sort_values('ay_no').head(1)
+                row = sub.iloc[0]
+                kesinti = row['sgk_kesinti'] + row['gelir_vergisi'] + row['damga_vergisi']
+                efektif_oran = kesinti / row['brut'] * 100
+                dilim_rows.append({
+                    'Yıl':              str(yil),
+                    'Baz Ay':           row['ay'],
+                    'Brüt':             row['brut'],
+                    'SGK Kesintisi':    row['sgk_kesinti'],
+                    'Gelir Vergisi':    row['gelir_vergisi'],
+                    'Damga Vergisi':    row['damga_vergisi'],
+                    'Toplam Kesinti':   kesinti,
+                    'Efektif Oran %':   round(efektif_oran, 2),
+                    'Vergi Dilimi':     _vergi_dilimi(row['brut']),
+                })
+            df_dilim = pd.DataFrame(dilim_rows).sort_values('Yıl').reset_index(drop=True)
+
+            # Tablo
+            df_tablo = df_dilim.copy()
+            for col in ['Brüt', 'SGK Kesintisi', 'Gelir Vergisi', 'Damga Vergisi', 'Toplam Kesinti']:
+                df_tablo[col] = df_tablo[col].apply(tl)
+            st.dataframe(df_tablo, use_container_width=True, hide_index=True)
+
+            st.divider()
+
+            col_v1, col_v2 = st.columns(2)
+            with col_v1:
+                # Kesinti bileşenleri yıllara göre stacked bar
+                fig3 = go.Figure()
+                fig3.add_trace(go.Bar(
+                    x=df_dilim['Yıl'], y=df_dilim['SGK Kesintisi'],
+                    name='SGK (%14)', marker_color='#EF553B'))
+                fig3.add_trace(go.Bar(
+                    x=df_dilim['Yıl'], y=df_dilim['Gelir Vergisi'],
+                    name='Gelir Vergisi', marker_color='#FF7F0E'))
+                fig3.add_trace(go.Bar(
+                    x=df_dilim['Yıl'], y=df_dilim['Damga Vergisi'],
+                    name='Damga Vergisi', marker_color='#9467BD'))
+                fig3.update_layout(
+                    title='Yıllık Kesinti Bileşenleri (Şubat Baz)',
+                    barmode='stack', xaxis_title='Yıl', yaxis_title='₺')
+                st.plotly_chart(fig3, use_container_width=True)
+
+            with col_v2:
+                # Efektif vergi oranı trend
+                fig4 = go.Figure()
+                fig4.add_trace(go.Scatter(
+                    x=df_dilim['Yıl'], y=df_dilim['Efektif Oran %'],
+                    mode='lines+markers+text',
+                    text=df_dilim['Efektif Oran %'].astype(str) + '%',
+                    textposition='top center',
+                    line=dict(color='#EF553B', width=3),
+                    fill='tozeroy', fillcolor='rgba(239,85,59,0.1)',
+                    name='Efektif Kesinti Oranı'))
+                fig4.update_layout(
+                    title='Toplam Efektif Kesinti Oranı Trendi (%)',
+                    xaxis_title='Yıl', yaxis_title='%',
+                    yaxis=dict(range=[0, 60]))
+                st.plotly_chart(fig4, use_container_width=True)
+
+            # Dilim değişim özeti
+            st.subheader("🔄 Vergi Dilimi Değişim Özeti")
+            prev_dilim = None
+            for _, row in df_dilim.iterrows():
+                icon = "🔺" if prev_dilim and row['Vergi Dilimi'] != prev_dilim else ("✅" if prev_dilim else "📌")
+                st.write(f"{icon} **{row['Yıl']}** — {row['Vergi Dilimi']} | "
+                         f"Brüt: {tl(row['Brüt'])}" if isinstance(row['Brüt'], float)
+                         else f"{icon} **{row['Yıl']}** — {row['Vergi Dilimi']} | Brüt: {row['Brüt']}")
+                prev_dilim = row['Vergi Dilimi']
+
+    # ── TAB 5: İSTATİSTİKLER ─────────────────────────────────────────────
+    with tab5:
         stats = bm.istatistikler()
         if stats['toplam'] == 0:
             st.info("İstatistik için önce bordro ekleyin.")
