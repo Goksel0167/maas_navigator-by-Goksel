@@ -360,7 +360,15 @@ def sayfa_tazminat():
             "Ölüm":                              "olum",
             "Askerlik":                          "askerlik",
         }
-        cikis_secim = st.selectbox("İşten Çıkış Sebebi", list(cikis_secenekleri.keys()))
+        col_sebep, col_paket = st.columns([3, 1])
+        with col_sebep:
+            cikis_secim = st.selectbox("İşten Çıkış Sebebi", list(cikis_secenekleri.keys()))
+        with col_paket:
+            paket_sayisi = st.number_input(
+                "Anlaşma Paketi (adet)",
+                min_value=0, value=0, step=1,
+                help="İşveren feshinde anlaşılan paket sayısı. 1 paket = 1 net maaş."
+            )
         hesapla = st.form_submit_button("🔍 Hesapla", use_container_width=True)
 
     if hesapla:
@@ -388,10 +396,31 @@ def sayfa_tazminat():
         col5.metric("Toplam Kesinti", f"-{tl(k['toplam_kesinti'])}")
         col6.metric("✅ NET ÖDEME",   tl(sonuc['net_tutar']))
 
+        # ── Anlaşma Paketi (sadece işveren feshinde) ───────────────────────
+        if cikis_sebebi == 'isverenFeshi' and paket_sayisi > 0:
+            kesinti_aylik = TazminatHesaplayici.vergi_kesintileri_hesapla(brut)
+            net_maas = brut - kesinti_aylik['toplam_kesinti']
+            paket_tutari = net_maas * paket_sayisi
+            toplam_paketli = sonuc['net_tutar'] + paket_tutari
+
+            st.divider()
+            st.subheader("🤝 Anlaşma Paketi")
+            st.caption("İşveren ile mutabık kalınan paket ödemesi (yasal tazminata ek)")
+            col7, col8, col9 = st.columns(3)
+            col7.metric("Net Aylık Maaş", tl(net_maas))
+            col8.metric(f"Paket Tutarı ({paket_sayisi} × net maaş)", tl(paket_tutari))
+            col9.metric("💰 Tazminat + Paket (Net)", tl(toplam_paketli))
+
+        # ── Pasta grafik ─────────────────────────────────────────────────────
         if t['toplam_brut'] > 0:
+            pie_names  = ['SGK Kesintisi', 'Gelir Vergisi', 'Damga Vergisi', 'Net Tutar']
+            pie_values = [k['sgk'], k['gelir_vergisi'], k['damga'], sonuc['net_tutar']]
+            if cikis_sebebi == 'isverenFeshi' and paket_sayisi > 0:
+                pie_names.append(f'Anlaşma Paketi ({paket_sayisi}x)')
+                pie_values.append(paket_tutari)
             fig = px.pie(
-                names=['SGK Kesintisi', 'Gelir Vergisi', 'Damga Vergisi', 'Net Tutar'],
-                values=[k['sgk'], k['gelir_vergisi'], k['damga'], sonuc['net_tutar']],
+                names=pie_names,
+                values=pie_values,
                 title="Tazminat Dağılımı",
                 color_discrete_sequence=px.colors.qualitative.Set3
             )
