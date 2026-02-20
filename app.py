@@ -38,13 +38,20 @@ class BordroYonetim:
                 sgk_kesinti REAL,
                 gelir_vergisi REAL,
                 damga_vergisi REAL,
-                eklenme_tarihi TEXT DEFAULT CURRENT_TIMESTAMP
+                eklenme_tarihi TEXT DEFAULT CURRENT_TIMESTAMP,
+                satis_primi REAL DEFAULT 0
             )
         ''')
+        # Eski veritabanları için satis_primi sütununu ekle
+        try:
+            cursor.execute('ALTER TABLE bordrolar ADD COLUMN satis_primi REAL DEFAULT 0')
+        except Exception:
+            pass  # Sütun zaten varsa geç
         conn.commit()
         conn.close()
 
-    def bordro_ekle(self, ay: str, brut: float, net: float) -> bool:
+    def bordro_ekle(self, ay: str, brut: float, net: float,
+                     satis_primi: float = 0.0) -> bool:
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -52,9 +59,10 @@ class BordroYonetim:
             damga = brut * 0.00759
             gelir_vergisi = brut - net - sgk - damga
             cursor.execute('''
-                INSERT INTO bordrolar (ay, brut, net, sgk_kesinti, gelir_vergisi, damga_vergisi)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (ay, brut, net, sgk, gelir_vergisi, damga))
+                INSERT INTO bordrolar
+                    (ay, brut, net, sgk_kesinti, gelir_vergisi, damga_vergisi, satis_primi)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (ay, brut, net, sgk, gelir_vergisi, damga, satis_primi))
             conn.commit()
             conn.close()
             return True
@@ -71,7 +79,8 @@ class BordroYonetim:
             bordrolar.append({
                 'id': row[0], 'ay': row[1], 'brut': row[2], 'net': row[3],
                 'sgk_kesinti': row[4], 'gelir_vergisi': row[5],
-                'damga_vergisi': row[6], 'eklenme_tarihi': row[7]
+                'damga_vergisi': row[6], 'eklenme_tarihi': row[7],
+                'satis_primi': row[8] if len(row) > 8 else 0.0
             })
         conn.close()
         return bordrolar
@@ -94,12 +103,14 @@ class BordroYonetim:
                     'toplam_kazanc': 0, 'toplam_kesinti': 0}
         toplam_brut = sum(b['brut'] for b in bordrolar)
         toplam_net = sum(b['net'] for b in bordrolar)
+        toplam_prim = sum(b.get('satis_primi', 0) or 0 for b in bordrolar)
         return {
             'toplam': len(bordrolar),
             'ortalama_brut': toplam_brut / len(bordrolar),
             'ortalama_net': toplam_net / len(bordrolar),
             'toplam_kazanc': toplam_brut,
-            'toplam_kesinti': toplam_brut - toplam_net
+            'toplam_kesinti': toplam_brut - toplam_net,
+            'toplam_satis_primi': toplam_prim
         }
 
 
@@ -506,29 +517,39 @@ def sayfa_bordro():
     st.header("📊 Bordro Arşivi")
     bm = BordroYonetim()
 
-    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+    tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
         "➕ Bordro Ekle",
         "📅 Yıllara Göre",
         "📊 Maaş Zammı Analizi",
         "🧮 Vergi Dilimi Karşılaştırması",
+        "💰 Satış Primi Analizi",
         "📈 İstatistikler"
     ])
 
     # ── TAB 1: BORDRO EKLE ────────────────────────────────────────────────
     with tab1:
         with st.form("bordro_ekle"):
-            col1, col2, col3 = st.columns(3)
+            col1, col2 = st.columns(2)
             with col1:
                 ay = st.text_input("Ay (YYYY-MM)", placeholder="2026-01")
             with col2:
-                brut = st.number_input("Brüt Maaş (₺)", min_value=0.0,
-                                        value=33030.0, step=500.0)
-            with col3:
                 net = st.number_input("Net Maaş (₺)", min_value=0.0,
                                        value=28075.0, step=500.0)
+            col3, col4 = st.columns(2)
+            with col3:
+                sabit_brut = st.number_input("Sabit Brüt Maaş (₺)", min_value=0.0,
+                                              value=33030.0, step=500.0)
+            with col4:
+                satis_primi = st.number_input("Satış Primi (₺)", min_value=0.0,
+                                               value=0.0, step=500.0,
+                                               help="Varsa o aya ait satış primini ayrıca girin")
+            toplam_brut = sabit_brut + satis_primi
+            if satis_primi > 0:
+                st.info(f"💡 Toplam Brüt: {tl(sabit_brut)} (sabit) + {tl(satis_primi)} (prim) "
+                        f"= **{tl(toplam_brut)}**")
             ekle = st.form_submit_button("✅ Bordroyu Kaydet", use_container_width=True)
         if ekle:
-            if bm.bordro_ekle(ay, brut, net):
+            if bm.bordro_ekle(ay, toplam_brut, net, satis_primi):
                 st.success("Bordro başarıyla eklendi!")
                 st.rerun()
             else:
@@ -557,17 +578,27 @@ def sayfa_bordro():
             secili_yil = st.selectbox("Yıl Seç", yillar)
 
             df_yil = df[df['yil'] == secili_yil].sort_values('ay')
-            df_show = df_yil[['id', 'ay', 'brut', 'net',
+            df_yil_prim = df_yil['satis_primi'].fillna(0)
+            df_show = df_yil[['id', 'ay', 'brut', 'satis_primi', 'net',
                                'sgk_kesinti', 'gelir_vergisi', 'damga_vergisi']].copy()
-            df_show.columns = ['ID', 'Ay', 'Brüt (₺)', 'Net (₺)',
+            df_show['satis_primi'] = df_show['satis_primi'].fillna(0)
+            df_show['sabit_brut'] = df_show['brut'] - df_show['satis_primi']
+            df_show = df_show[['id', 'ay', 'sabit_brut', 'satis_primi', 'brut', 'net',
+                                'sgk_kesinti', 'gelir_vergisi', 'damga_vergisi']]
+            df_show.columns = ['ID', 'Ay', 'Sabit Brüt (₺)', 'Prim (₺)',
+                                'Toplam Brüt (₺)', 'Net (₺)',
                                 'SGK (₺)', 'Gelir V. (₺)', 'Damga V. (₺)']
 
             # Özet metrikler
-            c1, c2, c3, c4 = st.columns(4)
+            toplam_prim_yil = df_yil_prim.sum()
+            c1, c2, c3, c4, c5 = st.columns(5)
             c1.metric(f"{secili_yil} Toplam Kayıt", len(df_yil))
             c2.metric("Ort. Brüt", tl(df_yil['brut'].mean()))
             c3.metric("Ort. Net",  tl(df_yil['net'].mean()))
             c4.metric("Toplam Kazanç", tl(df_yil['brut'].sum()))
+            c5.metric("Toplam Prim", tl(toplam_prim_yil),
+                      delta=f"%{toplam_prim_yil / df_yil['brut'].sum() * 100:.1f} brütün" if df_yil['brut'].sum() > 0 else None,
+                      delta_color="off")
 
             st.dataframe(df_show, use_container_width=True, hide_index=True)
 
@@ -779,17 +810,118 @@ def sayfa_bordro():
                          else f"{icon} **{row['Yıl']}** — {row['Vergi Dilimi']} | Brüt: {row['Brüt']}")
                 prev_dilim = row['Vergi Dilimi']
 
-    # ── TAB 5: İSTATİSTİKLER ─────────────────────────────────────────────
+    # ── TAB 5: SATIŞ PRİMİ ANALİZİ ──────────────────────────────────────
     with tab5:
+        bordrolar = bm.bordrolari_getir()
+        if not bordrolar:
+            st.info("Henüz bordro kaydı yok.")
+        else:
+            df = pd.DataFrame(bordrolar)
+            df['satis_primi'] = df['satis_primi'].fillna(0)
+            df['yil'] = df['ay'].str[:4].astype(int)
+            df['ay_no'] = df['ay'].str[5:7].astype(int)
+            df['sabit_brut'] = df['brut'] - df['satis_primi']
+
+            # ── Yıllık özet ────────────────────────────────────────────
+            st.subheader("📅 Yıllık Prim Özeti")
+            yil_ozet = []
+            for yil, grp in df.groupby('yil'):
+                toplam_brut   = grp['brut'].sum()
+                toplam_prim   = grp['satis_primi'].sum()
+                sabit_toplam  = grp['sabit_brut'].sum()
+                prim_oran     = toplam_prim / toplam_brut * 100 if toplam_brut > 0 else 0
+                primli_ay     = (grp['satis_primi'] > 0).sum()
+                yil_ozet.append({
+                    'Yıl':            str(yil),
+                    'Toplam Brüt':    toplam_brut,
+                    'Sabit Maaş Top.': sabit_toplam,
+                    'Toplam Prim':    toplam_prim,
+                    'Prim Oranı %':   round(prim_oran, 2),
+                    'Primli Ay':      int(primli_ay),
+                    'Ort. Aylık Prim': toplam_prim / len(grp),
+                })
+            df_yiloz = pd.DataFrame(yil_ozet)
+            df_yiloz_show = df_yiloz.copy()
+            for c in ['Toplam Brüt', 'Sabit Maaş Top.', 'Toplam Prim', 'Ort. Aylık Prim']:
+                df_yiloz_show[c] = df_yiloz_show[c].apply(tl)
+            st.dataframe(df_yiloz_show, use_container_width=True, hide_index=True)
+
+            st.divider()
+
+            # ── Grafikler ──────────────────────────────────────────────
+            col_p1, col_p2 = st.columns(2)
+
+            with col_p1:
+                # Yıllık sabit vs prim stacked bar
+                fig_p1 = go.Figure()
+                fig_p1.add_trace(go.Bar(
+                    x=df_yiloz['Yıl'], y=df_yiloz['Sabit Maaş Top.'],
+                    name='Sabit Brüt', marker_color='#636EFA'))
+                fig_p1.add_trace(go.Bar(
+                    x=df_yiloz['Yıl'], y=df_yiloz['Toplam Prim'],
+                    name='Satış Primi', marker_color='#FFA15A'))
+                fig_p1.update_layout(
+                    title='Yıllık Sabit Maaş vs Satış Primi',
+                    barmode='stack', xaxis_title='Yıl', yaxis_title='₺')
+                st.plotly_chart(fig_p1, use_container_width=True)
+
+            with col_p2:
+                # Prim oranı % trend
+                fig_p2 = go.Figure()
+                fig_p2.add_trace(go.Bar(
+                    x=df_yiloz['Yıl'], y=df_yiloz['Prim Oranı %'],
+                    marker_color='#FFA15A', name='Prim Oranı',
+                    text=df_yiloz['Prim Oranı %'].astype(str) + '%',
+                    textposition='outside'))
+                fig_p2.update_layout(
+                    title='Yıllık Prim / Brüt Oranı (%)',
+                    xaxis_title='Yıl', yaxis_title='%')
+                st.plotly_chart(fig_p2, use_container_width=True)
+
+            # ── Aylık prim detayı ──────────────────────────────────────
+            st.subheader("🗓️ Aylık Prim Detayı")
+            secili_yil_prim = st.selectbox("Yıl Seç", sorted(df['yil'].unique(),
+                                            reverse=True), key='prim_yil')
+            df_ay = df[df['yil'] == secili_yil_prim].sort_values('ay')
+            prim_var = df_ay[df_ay['satis_primi'] > 0]
+
+            if prim_var.empty:
+                st.info(f"{secili_yil_prim} yılı için kayıtlı satış primi bulunamadı.")
+            else:
+                fig_p3 = go.Figure()
+                fig_p3.add_trace(go.Bar(
+                    x=df_ay['ay'], y=df_ay['sabit_brut'],
+                    name='Sabit Brüt', marker_color='#636EFA'))
+                fig_p3.add_trace(go.Bar(
+                    x=df_ay['ay'], y=df_ay['satis_primi'],
+                    name='Satış Primi', marker_color='#FFA15A'))
+                fig_p3.update_layout(
+                    title=f'{secili_yil_prim} — Aylık Sabit Brüt + Satış Primi',
+                    barmode='stack', xaxis_title='Ay', yaxis_title='₺')
+                st.plotly_chart(fig_p3, use_container_width=True)
+
+                # Prim olan aylara özet tablo
+                df_prim_show = prim_var[['ay', 'sabit_brut', 'satis_primi', 'brut']].copy()
+                df_prim_show['prim_oran_%'] = (
+                    df_prim_show['satis_primi'] / df_prim_show['brut'] * 100).round(1)
+                df_prim_show.columns = ['Ay', 'Sabit Brüt', 'Satış Primi',
+                                         'Toplam Brüt', 'Primdeki Pay %']
+                for c in ['Sabit Brüt', 'Satış Primi', 'Toplam Brüt']:
+                    df_prim_show[c] = df_prim_show[c].apply(tl)
+                st.dataframe(df_prim_show, use_container_width=True, hide_index=True)
+
+    # ── TAB 6: İSTATİSTİKLER ─────────────────────────────────────────────
+    with tab6:
         stats = bm.istatistikler()
         if stats['toplam'] == 0:
             st.info("İstatistik için önce bordro ekleyin.")
         else:
-            c1, c2, c3, c4 = st.columns(4)
+            c1, c2, c3, c4, c5 = st.columns(5)
             c1.metric("Toplam Bordro",  stats['toplam'])
             c2.metric("Ort. Brüt",      tl(stats['ortalama_brut']))
             c3.metric("Ort. Net",       tl(stats['ortalama_net']))
             c4.metric("Toplam Kesinti", tl(stats['toplam_kesinti']))
+            c5.metric("Toplam Prim",    tl(stats['toplam_satis_primi']))
 
 
 def sayfa_asgari_ucret():
