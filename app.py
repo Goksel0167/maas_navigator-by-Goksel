@@ -764,16 +764,52 @@ def sayfa_bordro():
                 dy = df[df['yil'] == y]
                 dy_prim = dy['satis_primi'].fillna(0)
                 ozet_rows.append({
-                    'Yıl': y,
-                    'Kayıt':           len(dy),
-                    'Ort. Brüt':       dy['brut'].mean(),
-                    'Ort. Net':        dy['net'].mean(),
-                    'Toplam Brüt':     dy['brut'].sum(),
-                    'Toplam Prim':     dy_prim.sum(),
-                    'Toplam Kesinti':  (dy['brut'] - dy['net']).sum()
+                    'Yıl':            y,
+                    'Kayıt':          len(dy),
+                    'Ort. Brüt':      dy['brut'].mean(),
+                    'Ort. Net':       dy['net'].mean(),
+                    'Toplam Brüt':    dy['brut'].sum(),
+                    'Toplam Net':     dy['net'].sum(),
+                    'Toplam Prim':    dy_prim.sum(),
+                    'Toplam Kesinti': (dy['brut'] - dy['net']).sum(),
                 })
             df_ozet = pd.DataFrame(ozet_rows)
-            for col in ['Ort. Brüt', 'Ort. Net', 'Toplam Brüt', 'Toplam Prim', 'Toplam Kesinti']:
+
+            # Kümülatif sütunlar (sayısal olarak hesapla, sonra formatla)
+            df_ozet['Kümül. Brüt']    = df_ozet['Toplam Brüt'].cumsum()
+            df_ozet['Kümül. Net']     = df_ozet['Toplam Net'].cumsum()
+            df_ozet['Kümül. Prim']    = df_ozet['Toplam Prim'].cumsum()
+            df_ozet['Kümül. Kesinti'] = df_ozet['Toplam Kesinti'].cumsum()
+
+            # Kümülatif grafik (sayısal değerler kaybolmadan önce çiz)
+            fig_kum = go.Figure()
+            fig_kum.add_trace(go.Bar(
+                x=df_ozet['Yıl'], y=df_ozet['Toplam Net'],
+                name='Yıllık Net', marker_color='#00CC96'))
+            fig_kum.add_trace(go.Bar(
+                x=df_ozet['Yıl'], y=df_ozet['Toplam Kesinti'],
+                name='Yıllık Kesinti', marker_color='#EF553B'))
+            fig_kum.add_trace(go.Scatter(
+                x=df_ozet['Yıl'], y=df_ozet['Kümül. Brüt'],
+                name='Kümülatif Brüt', mode='lines+markers+text',
+                text=df_ozet['Kümül. Brüt'].apply(tl),
+                textposition='top center',
+                line=dict(color='#636EFA', width=3, dash='dot'),
+                yaxis='y2'))
+            fig_kum.update_layout(
+                title='Yıllık Kazanç & Kümülatif Toplam Brüt',
+                barmode='stack',
+                xaxis_title='Yıl',
+                yaxis=dict(title='Yıllık ₺'),
+                yaxis2=dict(title='Kümülatif ₺', overlaying='y', side='right',
+                            showgrid=False),
+                legend=dict(orientation='h', y=-0.2))
+            st.plotly_chart(fig_kum, use_container_width=True)
+
+            # Tabloyu formatla ve göster
+            for col in ['Ort. Brüt', 'Ort. Net',
+                        'Toplam Brüt', 'Toplam Net', 'Toplam Prim', 'Toplam Kesinti',
+                        'Kümül. Brüt', 'Kümül. Net', 'Kümül. Prim', 'Kümül. Kesinti']:
                 df_ozet[col] = df_ozet[col].apply(tl)
             st.dataframe(df_ozet, use_container_width=True, hide_index=True)
 
