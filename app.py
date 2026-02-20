@@ -138,6 +138,28 @@ class BordroYonetim:
         except Exception:
             return False
 
+    def bordro_guncelle(self, bordro_id: int, sabit_brut: float,
+                         satis_primi: float, net: float) -> bool:
+        try:
+            toplam_brut = sabit_brut + satis_primi
+            sgk = toplam_brut * 0.14
+            damga = toplam_brut * 0.00759
+            gelir_vergisi = toplam_brut - net - sgk - damga
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE bordrolar
+                SET brut=?, net=?, sgk_kesinti=?, gelir_vergisi=?,
+                    damga_vergisi=?, satis_primi=?
+                WHERE id=?
+            ''', (toplam_brut, net, sgk, gelir_vergisi, damga,
+                  satis_primi, bordro_id))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception:
+            return False
+
     def istatistikler(self) -> Dict:
         bordrolar = self.bordrolari_getir()
         if not bordrolar:
@@ -642,20 +664,12 @@ def sayfa_bordro():
 
             secili_yil = st.selectbox("Yıl Seç", yillar)
 
-            df_yil = df[df['yil'] == secili_yil].sort_values('ay')
-            df_yil_prim = df_yil['satis_primi'].fillna(0)
-            df_show = df_yil[['id', 'ay', 'brut', 'satis_primi', 'net',
-                               'sgk_kesinti', 'gelir_vergisi', 'damga_vergisi']].copy()
-            df_show['satis_primi'] = df_show['satis_primi'].fillna(0)
-            df_show['sabit_brut'] = df_show['brut'] - df_show['satis_primi']
-            df_show = df_show[['id', 'ay', 'sabit_brut', 'satis_primi', 'brut', 'net',
-                                'sgk_kesinti', 'gelir_vergisi', 'damga_vergisi']]
-            df_show.columns = ['ID', 'Ay', 'Sabit Brüt (₺)', 'Prim (₺)',
-                                'Toplam Brüt (₺)', 'Net (₺)',
-                                'SGK (₺)', 'Gelir V. (₺)', 'Damga V. (₺)']
+            df_yil = df[df['yil'] == secili_yil].sort_values('ay').reset_index(drop=True)
+            df_yil['satis_primi'] = df_yil['satis_primi'].fillna(0)
+            df_yil['sabit_brut']  = df_yil['brut'] - df_yil['satis_primi']
 
             # Özet metrikler
-            toplam_prim_yil = df_yil_prim.sum()
+            toplam_prim_yil = df_yil['satis_primi'].sum()
             c1, c2, c3, c4, c5 = st.columns(5)
             c1.metric(f"{secili_yil} Toplam Kayıt", len(df_yil))
             c2.metric("Ort. Brüt", tl(df_yil['brut'].mean()))
@@ -665,20 +679,81 @@ def sayfa_bordro():
                       delta=f"%{toplam_prim_yil / df_yil['brut'].sum() * 100:.1f} brütün" if df_yil['brut'].sum() > 0 else None,
                       delta_color="off")
 
-            st.dataframe(df_show, use_container_width=True, hide_index=True)
+            st.divider()
 
-            # Yıl içi brüt/net grafik
+            # ── Satır bazlı düzenle / sil ────────────────────────────────
+            duz_key = 'duz_bordro_id'
+            if duz_key not in st.session_state:
+                st.session_state[duz_key] = None
+
+            basliklar = st.columns([1.2, 1.8, 1.8, 1.8, 1.8, 1.8, 1, 1])
+            for h, lbl in zip(basliklar, ['Ay', 'Sabit Brüt', 'Prim', 'Toplam Brüt', 'Net', 'Kesinti', '✏️', '🗑️']):
+                h.markdown(f"**{lbl}**")
+
+            for _, satir in df_yil.iterrows():
+                rid       = int(satir['id'])
+                kesinti   = satir['sgk_kesinti'] + satir['gelir_vergisi'] + satir['damga_vergisi']
+                duzenle_aktif = (st.session_state[duz_key] == rid)
+
+                if duzenle_aktif:
+                    # ── Düzenleme formu (satır genişliğinde) ────────────
+                    with st.form(key=f'form_{rid}', border=True):
+                        st.markdown(f"**✏️ {satir['ay']} — Düzenleniyor**")
+                        fc1, fc2, fc3 = st.columns(3)
+                        yeni_sabit = fc1.number_input(
+                            "Sabit Brüt (₺)", value=float(satir['sabit_brut']),
+                            min_value=0.0, step=500.0, key=f's_{rid}')
+                        yeni_prim  = fc2.number_input(
+                            "Satış Primi (₺)", value=float(satir['satis_primi']),
+                            min_value=0.0, step=500.0, key=f'p_{rid}')
+                        yeni_net   = fc3.number_input(
+                            "Net (₺)", value=float(satir['net']),
+                            min_value=0.0, step=500.0, key=f'n_{rid}')
+                        toplam_preview = yeni_sabit + yeni_prim
+                        st.caption(f"Toplam Brüt: **{tl(toplam_preview)}** "
+                                   f"| Kesinti (tahmini): **{tl(toplam_preview - yeni_net)}**")
+                        bf1, bf2 = st.columns(2)
+                        kaydet = bf1.form_submit_button("💾 Kaydet", use_container_width=True)
+                        iptal  = bf2.form_submit_button("❌ İptal",  use_container_width=True)
+                    if kaydet:
+                        if bm.bordro_guncelle(rid, yeni_sabit, yeni_prim, yeni_net):
+                            st.success(f"{satir['ay']} güncellendi!")
+                            st.session_state[duz_key] = None
+                            st.rerun()
+                        else:
+                            st.error("Güncelleme başarısız!")
+                    if iptal:
+                        st.session_state[duz_key] = None
+                        st.rerun()
+                else:
+                    # ── Normal satır görünümü ────────────────────────────
+                    cols = st.columns([1.2, 1.8, 1.8, 1.8, 1.8, 1.8, 1, 1])
+                    cols[0].write(satir['ay'])
+                    cols[1].write(tl(satir['sabit_brut']))
+                    cols[2].write(tl(satir['satis_primi']))
+                    cols[3].write(tl(satir['brut']))
+                    cols[4].write(tl(satir['net']))
+                    cols[5].write(tl(kesinti))
+                    if cols[6].button("✏️", key=f'duz_{rid}', help="Düzenle"):
+                        st.session_state[duz_key] = rid
+                        st.rerun()
+                    if cols[7].button("🗑️", key=f'sil_{rid}', help="Sil"):
+                        if bm.bordro_sil(rid):
+                            st.success(f"{satir['ay']} silindi!")
+                            st.rerun()
+
+            # ── Grafik ───────────────────────────────────────────────────
+            st.divider()
             ay_labels = df_yil['ay'].tolist()
             fig = go.Figure()
-            fig.add_trace(go.Bar(x=ay_labels, y=df_yil['brut'],
-                                  name='Brüt', marker_color='#636EFA'))
+            fig.add_trace(go.Bar(x=ay_labels, y=df_yil['sabit_brut'],
+                                  name='Sabit Brüt', marker_color='#636EFA'))
+            fig.add_trace(go.Bar(x=ay_labels, y=df_yil['satis_primi'],
+                                  name='Satış Primi', marker_color='#FFA15A'))
             fig.add_trace(go.Bar(x=ay_labels, y=df_yil['net'],
                                   name='Net', marker_color='#00CC96'))
-            fig.add_trace(go.Bar(x=ay_labels,
-                                  y=df_yil['sgk_kesinti'] + df_yil['gelir_vergisi'] + df_yil['damga_vergisi'],
-                                  name='Toplam Kesinti', marker_color='#EF553B'))
-            fig.update_layout(title=f'{secili_yil} — Aylık Brüt / Net / Kesinti',
-                               barmode='group', xaxis_title='Ay', yaxis_title='₺')
+            fig.update_layout(title=f'{secili_yil} — Aylık Brüt Dağılımı & Net',
+                               barmode='stack', xaxis_title='Ay', yaxis_title='₺')
             st.plotly_chart(fig, use_container_width=True)
 
             # Tüm yıllar özet
@@ -687,16 +762,18 @@ def sayfa_bordro():
             ozet_rows = []
             for y in sorted(yillar):
                 dy = df[df['yil'] == y]
+                dy_prim = dy['satis_primi'].fillna(0)
                 ozet_rows.append({
                     'Yıl': y,
-                    'Kayıt':       len(dy),
-                    'Ort. Brüt':   dy['brut'].mean(),
-                    'Ort. Net':    dy['net'].mean(),
-                    'Toplam Brüt': dy['brut'].sum(),
-                    'Toplam Kesinti': (dy['brut'] - dy['net']).sum()
+                    'Kayıt':           len(dy),
+                    'Ort. Brüt':       dy['brut'].mean(),
+                    'Ort. Net':        dy['net'].mean(),
+                    'Toplam Brüt':     dy['brut'].sum(),
+                    'Toplam Prim':     dy_prim.sum(),
+                    'Toplam Kesinti':  (dy['brut'] - dy['net']).sum()
                 })
             df_ozet = pd.DataFrame(ozet_rows)
-            for col in ['Ort. Brüt', 'Ort. Net', 'Toplam Brüt', 'Toplam Kesinti']:
+            for col in ['Ort. Brüt', 'Ort. Net', 'Toplam Brüt', 'Toplam Prim', 'Toplam Kesinti']:
                 df_ozet[col] = df_ozet[col].apply(tl)
             st.dataframe(df_ozet, use_container_width=True, hide_index=True)
 
