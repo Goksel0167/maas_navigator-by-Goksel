@@ -143,8 +143,19 @@ class TazminatHesaplayici:
             return brut_maas * 8 / 4
 
     @staticmethod
-    def yillik_izin_ucreti_hesapla(brut_maas: float, kalan_izin: int) -> float:
-        return (brut_maas / 30) * kalan_izin
+    def yillik_izin_ucreti_hesapla(brut_maas: float, kalan_izin: int,
+                                    calisilan_gun: int = 22) -> Dict:
+        """30/çalışılan_gün katsayısı ile düzeltilmiş günlük brüt hesabı"""
+        gunluk_brut  = brut_maas / 30
+        carpan       = 30 / calisilan_gun if calisilan_gun > 0 else 1.0
+        duzgun       = carpan * kalan_izin          # düzeltilmiş gün sayısı
+        izin_brut    = duzgun * gunluk_brut
+        return {
+            'gunluk_brut':   gunluk_brut,
+            'carpan':        round(carpan, 4),
+            'duzeltilmis_gun': round(duzgun, 4),
+            'brut':          izin_brut,
+        }
 
     @staticmethod
     def vergi_kesintileri_hesapla(toplam_brut: float) -> Dict[str, float]:
@@ -172,14 +183,16 @@ class TazminatHesaplayici:
 
     @classmethod
     def tam_hesaplama(cls, brut_maas: float, baslama: str, bitis: str,
-                      cikis_sebebi: str, kalan_izin: int = 0) -> Dict:
+                      cikis_sebebi: str, kalan_izin: int = 0,
+                      calisilan_gun: int = 22) -> Dict:
         yil, gun = cls.calisma_suresi_hesapla(baslama, bitis)
         calisma_yil_desimal = yil + (gun / 365)
         kidem = cls.kidem_tazminati_hesapla(brut_maas, yil, gun, cikis_sebebi)
         ihbar = cls.ihbar_tazminati_hesapla(brut_maas, calisma_yil_desimal, cikis_sebebi)
 
-        # ─ Yıllık izin ücreti: günlük brüt = brut/30; ayrı kesinti uygulanır ─
-        yillik_izin_brut = cls.yillik_izin_ucreti_hesapla(brut_maas, kalan_izin)
+        # ─ Yıllık izin: (30/çalışılan_gün) × kalan_izin × günlük_brüt ────────────────
+        yi = cls.yillik_izin_ucreti_hesapla(brut_maas, kalan_izin, calisilan_gun)
+        yillik_izin_brut = yi['brut']
         if yillik_izin_brut > 0:
             yi_kes = cls.vergi_kesintileri_hesapla(yillik_izin_brut)
         else:
@@ -205,10 +218,13 @@ class TazminatHesaplayici:
 
         return {
             'calisma_suresi': {'yil': yil, 'gun': gun, 'toplam_yil': calisma_yil_desimal},
-            'tazminatlar': {'kidem': kidem, 'ihbar': ihbar,
-                            'yillik_izin_brut': yillik_izin_brut,
-                            'yillik_izin_net': yillik_izin_net,
-                            'toplam_brut': toplam_brut},
+            'tazminatlar': {
+                'kidem': kidem, 'ihbar': ihbar,
+                'yillik_izin_brut':      yillik_izin_brut,
+                'yillik_izin_net':       yillik_izin_net,
+                'yillik_izin_detay':     yi,          # gunluk_brut, carpan, duzeltilmis_gun
+                'toplam_brut': toplam_brut,
+            },
             'kesintiler': kesintiler,
             'net_tutar': net_tutar
         }
@@ -372,6 +388,11 @@ def sayfa_tazminat():
             bitis = st.date_input("İşten Çıkış Tarihi", value=date.today())
             kalan_izin = st.number_input("Kullanılmayan Yıllık İzin (Gün)",
                                           min_value=0, value=0, step=1)
+            calisilan_gun = st.number_input(
+                "Aylık Çalışılan Gün Sayısı",
+                min_value=1, max_value=31, value=22, step=1,
+                help="İzinlerin hesaplanacağı aylık çalışılan gün sayısı (genellikle 22)"
+            )
 
         cikis_secenekleri = {
             "İstifa (Kendi İsteğimle)":         "istifa",
@@ -398,7 +419,8 @@ def sayfa_tazminat():
             return
         cikis_sebebi = cikis_secenekleri[cikis_secim]
         sonuc = TazminatHesaplayici.tam_hesaplama(
-            brut, str(baslama), str(bitis), cikis_sebebi, int(kalan_izin)
+            brut, str(baslama), str(bitis), cikis_sebebi,
+            int(kalan_izin), int(calisilan_gun)
         )
         cs = sonuc['calisma_suresi']
         t  = sonuc['tazminatlar']
@@ -409,8 +431,18 @@ def sayfa_tazminat():
         col1, col2, col3 = st.columns(3)
         col1.metric("Kıdem Tazminatı",        tl(t['kidem']) if t['kidem'] > 0 else "Hak Yok")
         col2.metric("İhbar Tazminatı",        tl(t['ihbar']) if t['ihbar'] > 0 else "Hak Yok")
-        yi_label = f"Yıllık İzin (Net)  brüt: {tl(t['yillik_izin_brut'])}" if t['yillik_izin_brut'] > 0 else "Yıllık İzin"
-        col3.metric(yi_label, tl(t['yillik_izin_net']) if t['yillik_izin_net'] > 0 else "-")
+        col3.metric("Yıllık İzin Ücreti (Net)",
+                    tl(t['yillik_izin_net']) if t['yillik_izin_net'] > 0 else "-")
+
+        if t['yillik_izin_brut'] > 0:
+            yd = t['yillik_izin_detay']
+            st.caption(
+                f"📋 Yıllık İzin Hesabı: "
+                f"Günlük brüt = {tl(yd['gunluk_brut'])} · "
+                f"Katsayı = 30÷{calisilan_gun} = **{yd['carpan']:.4f}** · "
+                f"Düzeltilmiş gün = {yd['carpan']:.4f}×{kalan_izin} = **{yd['duzeltilmis_gun']:.2f}** gün · "
+                f"Brüt = **{tl(yd['brut'])}**"
+            )
 
         st.divider()
         col4, col5, col6 = st.columns(3)
