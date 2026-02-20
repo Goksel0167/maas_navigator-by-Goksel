@@ -8,11 +8,51 @@ Profesyonel bordro hesaplama, tazminat analizi ve yatırım planlama uygulaması
 from datetime import datetime, date
 from typing import Dict, List, Tuple
 import sqlite3
+import os
+import shutil
 
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+
+# ─────────────────────────────────────────────
+#  KALICI VERİTABANI YOLU
+# ─────────────────────────────────────────────
+def _db_yolu() -> str:
+    """Veritabanını kullanıcının AppData/Local altında sabit bir dizine koyar.
+    Böylece proje klasörü taşınsa veya silinse bile kayıtlar kaybolmaz."""
+    appdata = os.environ.get('LOCALAPPDATA',
+                 os.path.join(os.path.expanduser('~'), 'AppData', 'Local'))
+    dizin = os.path.join(appdata, 'MaasNavigator')
+    os.makedirs(dizin, exist_ok=True)
+    return os.path.join(dizin, 'maaspro.db')
+
+def _otomatik_yedekle(db_yolu: str):
+    """Her gün bir kez (gün değişince) DB'nin yedeğini aynı dizinde saklar,
+    en fazla 30 günlük yedek tutar."""
+    try:
+        dizin = os.path.dirname(db_yolu)
+        bugun = datetime.now().strftime('%Y-%m-%d')
+        yedek_yolu = os.path.join(dizin, f'maaspro_yedek_{bugun}.db')
+        if not os.path.exists(yedek_yolu) and os.path.exists(db_yolu):
+            shutil.copy2(db_yolu, yedek_yolu)
+        # 30 günden eski yedekleri sil
+        for dosya in os.listdir(dizin):
+            if dosya.startswith('maaspro_yedek_') and dosya.endswith('.db'):
+                tam_yol = os.path.join(dizin, dosya)
+                try:
+                    tarih_str = dosya.replace('maaspro_yedek_', '').replace('.db', '')
+                    tarih = datetime.strptime(tarih_str, '%Y-%m-%d')
+                    if (datetime.now() - tarih).days > 30:
+                        os.remove(tam_yol)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+DB_YOLU = _db_yolu()
+_otomatik_yedekle(DB_YOLU)
 
 
 # ─────────────────────────────────────────────
@@ -22,7 +62,9 @@ import plotly.graph_objects as go
 class BordroYonetim:
     """Bordro kayıtlarını yöneten sınıf"""
 
-    def __init__(self, db_path: str = "maaspro.db"):
+    def __init__(self, db_path: str = None):
+        if db_path is None:
+            db_path = DB_YOLU
         self.db_path = db_path
         self.baglanti_olustur()
 
@@ -556,14 +598,37 @@ def sayfa_bordro():
                 st.error("Bordro eklenemedi! Ay formatını kontrol edin (YYYY-MM).")
 
         st.divider()
-        st.caption("🗑️ Bordro Sil")
-        sil_id = st.number_input("Silmek istediğiniz Bordro ID:", min_value=1, step=1)
-        if st.button("🗑️ Seçili Bordroyu Sil"):
-            if bm.bordro_sil(int(sil_id)):
-                st.success("Bordro silindi!")
-                st.rerun()
+
+        # Kalıcı depolama bilgisi
+        with st.expander("💾 Veri Güvenliği & Yedekler", expanded=False):
+            db_dizin = os.path.dirname(DB_YOLU)
+            st.success(f"✅ Bordro kayıtlarınız kalıcı olarak saklanıyor:\n\n`{DB_YOLU}`")
+            st.caption("Proje klasörü taşınsa veya silinse bile bu konumdaki veriler güvende kalır.")
+            st.divider()
+            st.caption("📦 Otomatik Günlük Yedekler")
+            yedekler = sorted([
+                f for f in os.listdir(db_dizin)
+                if f.startswith('maaspro_yedek_') and f.endswith('.db')
+            ], reverse=True)
+            if yedekler:
+                for y in yedekler[:10]:
+                    tam = os.path.join(db_dizin, y)
+                    boyut = os.path.getsize(tam) / 1024
+                    st.write(f"📁 `{y}` — {boyut:.1f} KB")
+                if len(yedekler) > 10:
+                    st.caption(f"...ve {len(yedekler)-10} yedek daha (son 30 gün saklanır)")
             else:
-                st.error("Bordro silinemedi!")
+                st.info("Henüz yedek yok — uygulama her yeni gün açıldığında otomatik yedek alınır.")
+
+            st.divider()
+            st.caption("🗑️ Bordro Sil")
+            sil_id = st.number_input("Silmek istediğiniz Bordro ID:", min_value=1, step=1)
+            if st.button("🗑️ Seçili Bordroyu Sil"):
+                if bm.bordro_sil(int(sil_id)):
+                    st.success("Bordro silindi!")
+                    st.rerun()
+                else:
+                    st.error("Bordro silinemedi!")
 
     # ── TAB 2: YILLARA GÖRE ───────────────────────────────────────────────
     with tab2:
